@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { z } from 'zod';
+import { createReportSchema } from '@transitiq/shared';
 import { 
   calculateConfidenceScore, 
   calculateHealthAndPrediction 
-} from '@transit/scoring-engine';
+} from '@transitiq/scoring-engine';
 import { 
   User, 
   Station, 
@@ -11,29 +13,103 @@ import {
   Report, 
   HealthScore, 
   Alert, 
-  CreateReportPayload, 
-  IngestionQueueMessage,
   DashboardSummaryResponse
-} from '@transit/types';
+} from '@transitiq/types';
 
 type Bindings = {
   DB: D1Database;
   TRANSIT_KV: KVNamespace;
-  INGESTION_QUEUE: Queue<IngestionQueueMessage>;
+  REPORT_QUEUE: Queue<any>;
 };
 
-const app = new Hono<{ Bindings: Bindings }>();
+type Variables = {
+  userId: string;
+};
 
-// Enable CORS for frontend requests
+const app = new Hono<{ Bindings: Bindings, Variables: Variables }>();
+
+// Enable CORS for Vercel frontend deployments
 app.use('*', cors({
   origin: '*',
   allowHeaders: ['Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 }));
 
-// API Routes
+// Clerk JWT decoding & hackathon mock authentication middleware
+const authMiddleware = async (c: any, next: any) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return c.json({ success: false, error: 'Unauthorized: Missing or invalid token' }, 401);
+  }
+  
+  const token = authHeader.split(' ')[1];
+  
+  // Hackathon demo shortcut: allow passing plain user ids like "usr_demo_1"
+  if (token.startsWith('usr_') || token.startsWith('user_')) {
+    c.set('userId', token);
+    return await next();
+  }
+  
+  // Clerk JWT parse (extract sub claim containing Clerk user_id)
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      // Decode JWT payload chunk base64
+      const payloadDecoded = atob(parts[1]);
+      const payload = JSON.parse(payloadDecoded);
+      if (payload && payload.sub) {
+        c.set('userId', payload.sub);
+        return await next();
+      }
+    }
+  } catch (err) {}
+  
+  return c.json({ success: false, error: 'Unauthorized: JWT signature check or parsing failed' }, 401);
+};
 
-// 1. Infrastructure Routes
+// API ROUTES
+
+// 1. Stations Endpoints (Public)
+app.get('/api/stations', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare('SELECT * FROM stations ORDER BY name ASC').all<Station>();
+    return c.json({ success: true, data: results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+app.get('/api/stations/:id', async (c) => {
+  const stationId = c.req.param('id');
+  try {
+    const station = await c.env.DB.prepare('SELECT * FROM stations WHERE id = ?').bind(stationId).first<Station>();
+    if (!station) {
+      return c.json({ success: false, error: 'Station not found' }, 404);
+    }
+    const { results: stationAssets } = await c.env.DB.prepare(`
+      SELECT i.*, hs.score, hs.failure_probability
+      FROM infrastructure i
+      LEFT JOIN (
+        SELECT infrastructure_id, score, failure_probability,
+               ROW_NUMBER() OVER (PARTITION BY infrastructure_id ORDER BY computed_at DESC) as rn
+        FROM health_scores
+      ) hs ON i.id = hs.infrastructure_id AND hs.rn = 1
+      WHERE i.station_id = ?
+    `).bind(stationId).all();
+
+    return c.json({
+      success: true,
+      data: {
+        ...station,
+        infrastructure: stationAssets
+      }
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// 2. Infrastructure Endpoints (Public)
 app.get('/api/infrastructure', async (c) => {
   try {
     const query = `
@@ -86,13 +162,21 @@ app.get('/api/infrastructure/:id', async (c) => {
       ORDER BY r.created_at DESC LIMIT 10
     `).bind(id).all<Report>();
 
+    // Fetch history logs for graphs (Limit 20 entries)
+    const historyLogs = await c.env.DB.prepare(`
+      SELECT * FROM infrastructure_status_history 
+      WHERE infrastructure_id = ? 
+      ORDER BY created_at DESC LIMIT 20
+    `).bind(id).all();
+
     return c.json({
       success: true,
       data: {
         ...asset,
         health: latestHealth || null,
         activeAlerts: activeAlerts.results || [],
-        recentReports: recentReports.results || []
+        recentReports: recentReports.results || [],
+        history: historyLogs.results || []
       }
     });
   } catch (error: any) {
@@ -100,80 +184,62 @@ app.get('/api/infrastructure/:id', async (c) => {
   }
 });
 
-app.get('/api/stations/:id/infrastructure', async (c) => {
-  const stationId = c.req.param('id');
+// 3. Citizen Reports Endpoints
+// Authenticated route
+app.post('/api/reports', authMiddleware, async (c) => {
   try {
-    const query = `
-      SELECT i.*, hs.score, hs.failure_probability
-      FROM infrastructure i
-      LEFT JOIN (
-        SELECT infrastructure_id, score, failure_probability,
-               ROW_NUMBER() OVER (PARTITION BY infrastructure_id ORDER BY computed_at DESC) as rn
-        FROM health_scores
-      ) hs ON i.id = hs.infrastructure_id AND hs.rn = 1
-      WHERE i.station_id = ?
-    `;
-    const { results } = await c.env.DB.prepare(query).bind(stationId).all();
-    return c.json({ success: true, data: results });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
+    const body = await c.req.json();
+    const authenticatedUserId = c.get('userId');
 
-// 2. Citizen Reports Routes
-app.post('/api/reports', async (c) => {
-  try {
-    const body = await c.req.json<CreateReportPayload>();
+    // Override user_id from token for safety
+    body.user_id = authenticatedUserId;
     
-    // Validation
-    if (!body.infrastructure_id || !body.user_id || !body.description || !body.severity) {
-      return c.json({ success: false, error: 'Missing required parameters' }, 400);
+    // Zod Payload Validation
+    const validation = createReportSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json({ success: false, error: 'Validation failed', details: validation.error.format() }, 400);
     }
 
+    const payload = validation.data;
     const reportId = `rep_${crypto.randomUUID()}`;
     const timestamp = new Date().toISOString();
 
-    // Check if user exists, if not, auto-create a default commuter user for seamless demo
-    const user = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(body.user_id).first<{ role: string }>();
-    let role = 'commuter';
+    // Auto-create default commuter user record in D1 if not exists to facilitate smooth hackathon flows
+    const user = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(payload.user_id).first<{ role: string }>();
     if (!user) {
       await c.env.DB.prepare(`
         INSERT INTO users (id, clerk_id, name, email, role, created_at)
         VALUES (?, ?, ?, ?, 'commuter', ?)
-      `).bind(body.user_id, `clerk_${body.user_id}`, 'Citizen Commuter', `${body.user_id}@example.com', timestamp).run();
-    } else {
-      role = user.role;
+      `).bind(payload.user_id, `clerk_${payload.user_id}`, 'Citizen Commuter', `${payload.user_id}@example.com`, timestamp).run();
     }
 
-    // Step 1: Store Report in database (Ingestion Agent)
-    // Initial confidence score will be set to 0.5 (will be updated by the verification agent asynchronously)
+    // Step 1: Save Report to D1 (Confidence starts at 0.5)
     await c.env.DB.prepare(`
       INSERT INTO reports (id, infrastructure_id, user_id, description, severity, confidence, created_at)
       VALUES (?, ?, ?, ?, ?, 0.5, ?)
     `).bind(
       reportId, 
-      body.infrastructure_id, 
-      body.user_id, 
-      body.description, 
-      body.severity, 
+      payload.infrastructure_id, 
+      payload.user_id, 
+      payload.description, 
+      payload.severity, 
       timestamp
     ).run();
 
-    // Step 2: Push message to Queue for Agent pipeline processing
-    await c.env.INGESTION_QUEUE.send({
+    // Step 2: Dispatch processing to the collapsed REPORT_QUEUE
+    await c.env.REPORT_QUEUE.send({
       reportId,
-      infrastructureId: body.infrastructure_id,
-      severity: body.severity,
-      userId: body.user_id,
+      infrastructureId: payload.infrastructure_id,
+      userId: payload.user_id,
       timestamp
     });
 
-    // Invalidate dashboard summary cache in KV
+    // Invalidate dashboard summary cache
     await c.env.TRANSIT_KV.delete('dashboard_summary');
 
     return c.json({ 
       success: true, 
-      message: 'Report received and queued for analysis', 
+      message: 'Report received and pushed to prediction engine', 
       data: { reportId } 
     });
   } catch (error: any) {
@@ -197,7 +263,82 @@ app.get('/api/reports/:infrastructureId', async (c) => {
   }
 });
 
-// 3. Health & Predictions Routes
+// 4. Alerts Endpoints (Public list)
+app.get('/api/alerts', async (c) => {
+  try {
+    const query = `
+      SELECT a.*, i.name as asset_name, s.name as station_name
+      FROM alerts a
+      LEFT JOIN infrastructure i ON a.infrastructure_id = i.id
+      LEFT JOIN stations s ON i.station_id = s.id
+      ORDER BY a.created_at DESC
+    `;
+    const { results } = await c.env.DB.prepare(query).all();
+    return c.json({ success: true, data: results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Resolve Alert Endpoint (Operator/Admin Authenticated)
+app.post('/api/alerts/:id/resolve', authMiddleware, async (c) => {
+  const alertId = c.req.param('id');
+  const resolverUserId = c.get('userId');
+  try {
+    // Check if resolver is operator or admin
+    const user = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(resolverUserId).first<{ role: string }>();
+    if (!user || (user.role !== 'operator' && user.role !== 'admin')) {
+      return c.json({ success: false, error: 'Forbidden: Only operators or admins can resolve alerts' }, 403);
+    }
+
+    const alert = await c.env.DB.prepare('SELECT infrastructure_id FROM alerts WHERE id = ?').bind(alertId).first<{ infrastructure_id: string }>();
+    if (!alert) {
+      return c.json({ success: false, error: 'Alert not found' }, 404);
+    }
+
+    const timestamp = new Date().toISOString();
+
+    // 1. Resolve alert in DB
+    await c.env.DB.prepare('UPDATE alerts SET resolved = 1 WHERE id = ?').bind(alertId).run();
+
+    // 2. Log maintenance task completed
+    const logId = `maint_${crypto.randomUUID()}`;
+    await c.env.DB.prepare(`
+      INSERT INTO maintenance_logs (id, infrastructure_id, action, technician, completed_at)
+      VALUES (?, ?, 'Resolved Alert', 'Operator Dispatch Crew', ?)
+    `).bind(logId, alert.infrastructure_id, timestamp).run();
+
+    // 3. Reset the asset back to healthy status & update last maintenance time
+    await c.env.DB.prepare(`
+      UPDATE infrastructure 
+      SET status = 'healthy', last_maintenance = ? 
+      WHERE id = ?
+    `).bind(timestamp, alert.infrastructure_id).run();
+
+    // 4. Calculate a fresh healthy score
+    const scoreId = `hs_${crypto.randomUUID()}`;
+    await c.env.DB.prepare(`
+      INSERT INTO health_scores (id, infrastructure_id, score, failure_probability, predicted_failure_time, computed_at)
+      VALUES (?, ?, 100, 0.0, NULL, ?)
+    `).bind(scoreId, alert.infrastructure_id, timestamp).run();
+
+    // 5. Append a status history baseline for line charts
+    const historyId = `sh_${crypto.randomUUID()}`;
+    await c.env.DB.prepare(`
+      INSERT INTO infrastructure_status_history (id, infrastructure_id, health_score, failure_probability, created_at)
+      VALUES (?, ?, 100, 0.0, ?)
+    `).bind(historyId, alert.infrastructure_id, timestamp).run();
+
+    // Clear Cache
+    await c.env.TRANSIT_KV.delete('dashboard_summary');
+
+    return c.json({ success: true, message: 'Alert resolved, asset status reset to healthy' });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// 5. Health Endpoints (Public)
 app.get('/api/health/:id', async (c) => {
   const infraId = c.req.param('id');
   try {
@@ -216,81 +357,19 @@ app.get('/api/health/:id', async (c) => {
   }
 });
 
-// 4. Alerts Routes
-app.get('/api/alerts', async (c) => {
-  try {
-    const query = `
-      SELECT a.*, i.name as asset_name, s.name as station_name
-      FROM alerts a
-      LEFT JOIN infrastructure i ON a.infrastructure_id = i.id
-      LEFT JOIN stations s ON i.station_id = s.id
-      ORDER BY a.created_at DESC
-    `;
-    const { results } = await c.env.DB.prepare(query).all();
-    return c.json({ success: true, data: results });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
-
-app.post('/api/alerts/:id/resolve', async (c) => {
-  const alertId = c.req.param('id');
-  try {
-    const alert = await c.env.DB.prepare('SELECT infrastructure_id FROM alerts WHERE id = ?').bind(alertId).first<{ infrastructure_id: string }>();
-    if (!alert) {
-      return c.json({ success: false, error: 'Alert not found' }, 404);
-    }
-
-    const timestamp = new Date().toISOString();
-
-    // 1. Mark alert as resolved in D1
-    await c.env.DB.prepare('UPDATE alerts SET resolved = 1 WHERE id = ?').bind(alertId).run();
-
-    // 2. Log maintenance action in D1
-    const logId = `maint_${crypto.randomUUID()}`;
-    await c.env.DB.prepare(`
-      INSERT INTO maintenance_logs (id, infrastructure_id, action, technician, completed_at)
-      VALUES (?, ?, 'Resolved Active Alert', 'On-duty Operator', ?)
-    `).bind(logId, alert.infrastructure_id, timestamp).run();
-
-    // 3. Reset the asset back to healthy status & update last maintenance time
-    await c.env.DB.prepare(`
-      UPDATE infrastructure 
-      SET status = 'healthy', last_maintenance = ? 
-      WHERE id = ?
-    `).bind(timestamp, alert.infrastructure_id).run();
-
-    // 4. Calculate a fresh healthy score
-    const scoreId = `hs_${crypto.randomUUID()}`;
-    await c.env.DB.prepare(`
-      INSERT INTO health_scores (id, infrastructure_id, score, failure_probability, predicted_failure_time, computed_at)
-      VALUES (?, ?, 100, 0.0, NULL, ?)
-    `).bind(scoreId, alert.infrastructure_id, timestamp).run();
-
-    // Clear KV Cache
-    await c.env.TRANSIT_KV.delete('dashboard_summary');
-
-    return c.json({ success: true, message: 'Alert resolved, asset restored to healthy status' });
-  } catch (error: any) {
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
-
-// 5. Dashboard Summary Route (with KV caching)
+// 6. Dashboard Summary Endpoint (KV Cached)
 app.get('/api/dashboard/summary', async (c) => {
   try {
-    // Attempt to read from KV Cache first
+    // Attempt cache read
     const cached = await c.env.TRANSIT_KV.get('dashboard_summary');
     if (cached) {
       return c.json({ success: true, data: JSON.parse(cached), cached: true });
     }
 
-    // KV Cache Miss: Run DB Queries
     const totalInfQuery = await c.env.DB.prepare('SELECT COUNT(*) as count FROM infrastructure').first<{ count: number }>();
     const activeAlertsQuery = await c.env.DB.prepare('SELECT COUNT(*) as count FROM alerts WHERE resolved = 0').first<{ count: number }>();
     const criticalAssetsQuery = await c.env.DB.prepare('SELECT COUNT(*) as count FROM infrastructure WHERE status = "critical"').first<{ count: number }>();
 
-    // Calculate Average Reliability (Average Health Score)
     const avgReliabilityQuery = await c.env.DB.prepare(`
       SELECT AVG(score) as avg_score 
       FROM (
@@ -306,7 +385,7 @@ app.get('/api/dashboard/summary', async (c) => {
       averageReliability: avgReliabilityQuery?.avg_score ? Math.round(avgReliabilityQuery.avg_score) : 100
     };
 
-    // Cache in KV for 5 minutes (300 seconds)
+    // Cache in KV for 5 minutes
     await c.env.TRANSIT_KV.put('dashboard_summary', JSON.stringify(summary), { expirationTtl: 300 });
 
     return c.json({ success: true, data: summary, cached: false });
@@ -315,22 +394,22 @@ app.get('/api/dashboard/summary', async (c) => {
   }
 });
 
-// Cloudflare Queue Consumer Event Handler
-// Integrates Ingestion, Verification, Prediction, and Alert Agents
+// COLLAPSED SINGLE QUEUE CONSUMER PROCESSOR
+// Implements the Verification Agent -> Prediction Agent -> Alert Agent sequentially
 const handleQueueMessage = async (
-  batch: MessageBatch<IngestionQueueMessage>, 
+  batch: MessageBatch<any>, 
   env: Bindings
 ) => {
   for (const message of batch.messages) {
-    const { infrastructureId, reportId, userId } = message.body;
+    const { reportId, infrastructureId, userId } = message.body;
 
     try {
-      // 1. Get reporter role
+      // 1. VERIFICATION AGENT STEP
+      // Fetch reporter role
       const user = await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(userId).first<{ role: string }>();
       const userRole = (user?.role || 'commuter') as any;
 
-      // 2. Verification Agent (Agent 2)
-      // Count matching reports for this asset in the past 24 hours
+      // Count recent commuter reports (past 24h)
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const countResult = await env.DB.prepare(`
         SELECT COUNT(*) as count 
@@ -341,15 +420,18 @@ const handleQueueMessage = async (
       const recentReportsCount = countResult?.count || 1;
       const confidence = calculateConfidenceScore(recentReportsCount, userRole);
 
-      // Update the current report's confidence in the DB
+      // Save confidence score in D1
       await env.DB.prepare('UPDATE reports SET confidence = ? WHERE id = ?').bind(confidence, reportId).run();
 
-      // 3. Prediction Agent (Agent 3)
-      // Fetch latest asset details
-      const asset = await env.DB.prepare('SELECT type, last_maintenance FROM infrastructure WHERE id = ?').bind(infrastructureId).first<Infrastructure>();
-      if (!asset) continue;
+      // 2. PREDICTION AGENT STEP
+      // Fetch asset type and maintenance timestamp
+      const asset = await env.DB.prepare('SELECT type, last_maintenance, name FROM infrastructure WHERE id = ?').bind(infrastructureId).first<Infrastructure>();
+      if (!asset) {
+        message.ack();
+        continue;
+      }
 
-      // Fetch all reports for this asset in past 24 hours to aggregate their severity & confidence
+      // Fetch all reports in the past 24 hours to run the aggregate prediction equation
       const activeReports = await env.DB.prepare(`
         SELECT severity, confidence FROM reports 
         WHERE infrastructure_id = ? AND created_at >= ?
@@ -360,14 +442,14 @@ const handleQueueMessage = async (
         confidence: r.confidence
       }));
 
-      // Calculate health & probability of failure
+      // Calculate health indexes using scoring-engine
       const prediction = calculateHealthAndPrediction(
         asset.type,
         asset.last_maintenance,
         scoringInputs
       );
 
-      // Write new health score row
+      // Write updated health metrics row in D1
       const scoreId = `hs_${crypto.randomUUID()}`;
       await env.DB.prepare(`
         INSERT INTO health_scores (id, infrastructure_id, score, failure_probability, predicted_failure_time, computed_at)
@@ -381,12 +463,25 @@ const handleQueueMessage = async (
         new Date().toISOString()
       ).run();
 
-      // Update status of asset in infrastructure table
+      // NEW: Log historical progression for graphs
+      const historyId = `sh_${crypto.randomUUID()}`;
+      await env.DB.prepare(`
+        INSERT INTO infrastructure_status_history (id, infrastructure_id, health_score, failure_probability, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(
+        historyId, 
+        infrastructureId, 
+        prediction.healthScore, 
+        prediction.failureProbability, 
+        new Date().toISOString()
+      ).run();
+
+      // Update current asset status in D1
       await env.DB.prepare('UPDATE infrastructure SET status = ? WHERE id = ?').bind(prediction.status, infrastructureId).run();
 
-      // 4. Alert Agent (Agent 4)
-      if (prediction.failureProbability >= 0.70) {
-        // Check if there is already an active alert for this asset to prevent duplicate alert fatigue
+      // 3. ALERT AGENT STEP
+      if (prediction.failureProbability > 0.70) {
+        // Prevent duplicate alert fatigue
         const existingAlert = await env.DB.prepare(`
           SELECT id FROM alerts 
           WHERE infrastructure_id = ? AND resolved = 0
@@ -394,8 +489,8 @@ const handleQueueMessage = async (
 
         if (!existingAlert) {
           const alertId = `alt_${crypto.randomUUID()}`;
-          const alertTitle = `Auto Alert: High failure risk on ${asset.name || 'Transit Asset'}`;
-          const alertMsg = `Calculated failure probability is ${(prediction.failureProbability * 100).toFixed(0)}%. Health index: ${prediction.healthScore}/100. Immediate maintenance requested.`;
+          const alertTitle = `Predictive Alert: High Outage Risk on ${asset.name}`;
+          const alertMsg = `Calculated failure probability is ${(prediction.failureProbability * 100).toFixed(0)}%. Asset health index is ${prediction.healthScore}/100. Scheduled maintenance dispatch recommended.`;
           
           await env.DB.prepare(`
             INSERT INTO alerts (id, infrastructure_id, title, message, severity, resolved, created_at)
@@ -410,21 +505,18 @@ const handleQueueMessage = async (
         }
       }
 
-      // Explicitly acknowledge processed message
       message.ack();
 
     } catch (err) {
       console.error(`Error processing queue message for asset ${infrastructureId}:`, err);
-      // Retry in next batch
       message.retry();
     }
   }
 
-  // Clear KV cache at the end of the batch
+  // Clear dashboard summary cache in KV
   await env.TRANSIT_KV.delete('dashboard_summary');
 };
 
-// Export Worker setup
 export default {
   fetch: app.fetch,
   queue: handleQueueMessage

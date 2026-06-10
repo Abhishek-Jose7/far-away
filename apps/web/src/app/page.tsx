@@ -21,7 +21,7 @@ import {
   Search,
   Filter
 } from 'lucide-react';
-import { Infrastructure, Alert } from '@transit/types';
+import { Infrastructure, Alert } from '@transitiq/types';
 
 export default function Home() {
   const queryClient = useQueryClient();

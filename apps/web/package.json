@@ -11,7 +11,8 @@
   "dependencies": {
     "@clerk/nextjs": "^5.0.0",
     "@tanstack/react-query": "^5.28.0",
-    "@transit/types": "*",
+    "@transitiq/shared": "workspace:*",
+    "@transitiq/types": "workspace:*",
     "clsx": "^2.1.0",
     "lucide-react": "^0.359.0",
     "maplibre-gl": "^4.1.1",

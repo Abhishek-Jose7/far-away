@@ -1,1 +1,26 @@
-/node_modules
+# Dependency directories
+node_modules/
+
+# Next.js build outputs
+.next/
+out/
+
+# Cloudflare Wrangler local state & dev vars
+.wrangler/
+.dev.vars
+
+# Turborepo cache and build artifacts
+.turbo/
+dist/
+build/
+*.tsbuildinfo
+
+# Local environment variables/secrets
+.env
+.env*.local
+.env.development
+.env.production
+
+# Operating system files
+.DS_Store
+Thumbs.db

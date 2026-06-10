@@ -1,35 +1,35 @@
 # wrangler.toml
-# Cloudflare Worker Configuration for Transit Infrastructure Intelligence
+# Cloudflare Worker Configuration for TransitIQ
 
-name = "transit-intelligence-api"
+name = "transitiq-api"
 main = "apps/worker/src/index.ts"
 compatibility_date = "2024-03-01"
 
-# Environment Variables
 [vars]
 ENVIRONMENT = "development"
 
 # D1 Database Bindings
 [[d1_databases]]
 binding = "DB"
-database_name = "transit-dev"
-database_id = "00000000-0000-0000-0000-000000000001" # Place your generated dev DB ID here
+database_name = "transitiq-dev"
+database_id = "85d69e5b-459c-441e-8e1c-a04b4de72f8e"
 migrations_dir = "packages/database/migrations"
 
-# Key-Value Storage Bindings
+# Key-Value Cache Bindings
 [[kv_namespaces]]
 binding = "TRANSIT_KV"
-id = "00000000-0000-0000-0000-000000000002" # Place your generated dev KV namespace ID here
+id = "00000000-0000-0000-0000-000000000002"
 
-# Cloudflare Queues Bindings
+# --- Cloudflare Queues Producers ---
 [[queues.producers]]
-queue = "transit-ingestion-queue"
-binding = "INGESTION_QUEUE"
+queue = "transitiq-report-queue"
+binding = "REPORT_QUEUE"
 
+# --- Cloudflare Queues Consumers ---
 [[queues.consumers]]
-queue = "transit-ingestion-queue"
+queue = "transitiq-report-queue"
 max_batch_size = 10
-max_batch_timeout = 5 # seconds
+max_batch_timeout = 1
 
 # --- Production Environment ---
 [env.production]
@@ -37,19 +37,19 @@ vars = { ENVIRONMENT = "production" }
 
 [[env.production.d1_databases]]
 binding = "DB"
-database_name = "transit-prod"
-database_id = "00000000-0000-0000-0000-000000000003" # Place your generated prod DB ID here
+database_name = "transitiq-prod"
+database_id = "62e7fb8c-46eb-49e8-9a01-05adfb0ebe79"
 migrations_dir = "packages/database/migrations"
 
 [[env.production.kv_namespaces]]
 binding = "TRANSIT_KV"
-id = "00000000-0000-0000-0000-000000000004" # Place your generated prod KV namespace ID here
+id = "00000000-0000-0000-0000-000000000004"
 
 [[env.production.queues.producers]]
-queue = "transit-ingestion-queue-prod"
-binding = "INGESTION_QUEUE"
+queue = "transitiq-report-queue-prod"
+binding = "REPORT_QUEUE"
 
 [[env.production.queues.consumers]]
-queue = "transit-ingestion-queue-prod"
+queue = "transitiq-report-queue-prod"
 max_batch_size = 10
-max_batch_timeout = 5
+max_batch_timeout = 1

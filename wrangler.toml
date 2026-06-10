@@ -1,0 +1,55 @@
+# wrangler.toml
+# Cloudflare Worker Configuration for Transit Infrastructure Intelligence
+
+name = "transit-intelligence-api"
+main = "apps/worker/src/index.ts"
+compatibility_date = "2024-03-01"
+
+# Environment Variables
+[vars]
+ENVIRONMENT = "development"
+
+# D1 Database Bindings
+[[d1_databases]]
+binding = "DB"
+database_name = "transit-dev"
+database_id = "00000000-0000-0000-0000-000000000001" # Place your generated dev DB ID here
+migrations_dir = "packages/database/migrations"
+
+# Key-Value Storage Bindings
+[[kv_namespaces]]
+binding = "TRANSIT_KV"
+id = "00000000-0000-0000-0000-000000000002" # Place your generated dev KV namespace ID here
+
+# Cloudflare Queues Bindings
+[[queues.producers]]
+queue = "transit-ingestion-queue"
+binding = "INGESTION_QUEUE"
+
+[[queues.consumers]]
+queue = "transit-ingestion-queue"
+max_batch_size = 10
+max_batch_timeout = 5 # seconds
+
+# --- Production Environment ---
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "transit-prod"
+database_id = "00000000-0000-0000-0000-000000000003" # Place your generated prod DB ID here
+migrations_dir = "packages/database/migrations"
+
+[[env.production.kv_namespaces]]
+binding = "TRANSIT_KV"
+id = "00000000-0000-0000-0000-000000000004" # Place your generated prod KV namespace ID here
+
+[[env.production.queues.producers]]
+queue = "transit-ingestion-queue-prod"
+binding = "INGESTION_QUEUE"
+
+[[env.production.queues.consumers]]
+queue = "transit-ingestion-queue-prod"
+max_batch_size = 10
+max_batch_timeout = 5

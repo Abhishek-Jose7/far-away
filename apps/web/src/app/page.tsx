@@ -2,6 +2,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTransitStore } from '../lib/store';
 import { api } from '../lib/api';
@@ -22,6 +23,25 @@ import {
   Filter
 } from 'lucide-react';
 import { Infrastructure, Alert } from '@transitiq/types';
+import {
+  computeAssetsAtRisk,
+  computeRiskDistribution,
+  computeTypeBreakdown,
+  sortAssetsByRisk,
+  getHealthBarColor,
+  getHealthTextColor,
+  getFailureProbabilityColor,
+  buildAssetHealthTrend,
+  InfrastructureWithHealth,
+} from '../lib/analytics';
+import { StatusBadge } from '../components/operator/StatusBadge';
+import { HealthTrendChart } from '../components/operator/HealthTrendChart';
+import { RiskDistributionChart } from '../components/operator/RiskDistributionChart';
+import { TypeBreakdownChart } from '../components/operator/TypeBreakdownChart';
+const TransitMap = dynamic(
+  () => import('../components/TransitMap').then((m) => m.TransitMap),
+  { ssr: false },
+);
 
 export default function Home() {
   const queryClient = useQueryClient();
@@ -63,6 +83,12 @@ export default function Home() {
   const { data: summaryResponse, refetch: refetchSummary } = useQuery({
     queryKey: ['summary'],
     queryFn: api.getDashboardSummary
+  });
+
+  const { data: healthTrendResponse, isLoading: isHealthTrendLoading, refetch: refetchHealthTrend } = useQuery({
+    queryKey: ['healthTrend'],
+    queryFn: api.getHealthTrend,
+    enabled: viewMode === 'operator',
   });
 
   const { data: selectedAssetDetails, refetch: refetchAssetDetails } = useQuery({
@@ -118,6 +144,13 @@ export default function Home() {
     averageReliability: 100
   };
 
+  const healthTrendData = healthTrendResponse?.data || [];
+  const riskDistribution = computeRiskDistribution(assets);
+  const typeBreakdown = computeTypeBreakdown(assets);
+  const assetsAtRisk = computeAssetsAtRisk(assets);
+  const sortedOperatorAssets = sortAssetsByRisk(assets as InfrastructureWithHealth[]);
+  const assetHealthTrend = buildAssetHealthTrend(selectedAssetDetails?.data?.history || []);
+
   // Auto-set the first asset when none selected
   useEffect(() => {
     if (assets.length > 0 && !selectedAssetId) {
@@ -127,12 +160,12 @@ export default function Home() {
 
   // Derived Stations list for drop downs and map
   const stations = [
-    { id: 'st_cst', name: 'CSMT', lat: 150, lng: 180, color: 'text-emerald-500' },
-    { id: 'st_dadar', name: 'Dadar', lat: 140, lng: 280, color: 'text-red-500' },
-    { id: 'st_andheri', name: 'Andheri', lat: 80, lng: 360, color: 'text-red-500' },
-    { id: 'st_kurla', name: 'Kurla', lat: 200, lng: 340, color: 'text-amber-500' },
-    { id: 'st_ghatkopar', name: 'Ghatkopar', lat: 240, lng: 390, color: 'text-amber-500' },
-    { id: 'st_thane', name: 'Thane', lat: 310, lng: 480, color: 'text-red-500' }
+    { id: 'st_cst', name: 'CSMT', lng: 72.8355, lat: 18.9402 },
+    { id: 'st_dadar', name: 'Dadar', lng: 72.8424, lat: 19.0180 },
+    { id: 'st_andheri', name: 'Andheri', lng: 72.8464, lat: 19.1197 },
+    { id: 'st_kurla', name: 'Kurla', lng: 72.8890, lat: 19.0728 },
+    { id: 'st_ghatkopar', name: 'Ghatkopar', lng: 72.9081, lat: 19.0856 },
+    { id: 'st_thane', name: 'Thane', lng: 72.9781, lat: 19.2183 },
   ];
 
   // Map station status color
@@ -171,9 +204,9 @@ export default function Home() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen">
+    <div className={`flex flex-col ${viewMode === 'operator' ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
       {/* Premium Header */}
-      <header className="glass-panel sticky top-0 z-40 w-full px-6 py-4 flex items-center justify-between border-b border-slate-800">
+      <header className={`glass-panel z-40 w-full px-6 py-4 flex items-center justify-between border-b border-slate-800 ${viewMode === 'operator' ? 'shrink-0' : 'sticky top-0'}`}>
         <div className="flex items-center gap-3">
           <div className="bg-gradient-to-tr from-violet-600 to-indigo-500 p-2 rounded-xl text-white shadow-lg shadow-violet-500/20">
             <Activity className="h-6 w-6 animate-pulse" />
@@ -214,7 +247,7 @@ export default function Home() {
           </div>
 
           <button 
-            onClick={() => { refetchInfra(); refetchAlerts(); refetchSummary(); }}
+            onClick={() => { refetchInfra(); refetchAlerts(); refetchSummary(); refetchHealthTrend(); }}
             className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-lg text-slate-400 hover:text-white transition-all"
             title="Force refresh backend data"
           >
@@ -232,7 +265,7 @@ export default function Home() {
       </header>
 
       {/* Main Layout Container */}
-      <main className="flex-1 w-full max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 gap-6">
+      <main className={`flex-1 w-full max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 gap-6 ${viewMode === 'operator' ? 'min-h-0 overflow-y-auto' : ''}`}>
         
         {/* COMMUTER VIEW */}
         {viewMode === 'commuter' && (
@@ -255,50 +288,19 @@ export default function Home() {
                   </span>
                 </div>
 
-                {/* SVG Vector Map Container */}
-                <div className="relative w-full h-[400px] bg-slate-900/60 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center">
-                  
-                  {/* Decorative background grid */}
-                  <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.02)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.02)_1px,transparent_1px)] bg-[size:24px_24px]" />
-                  
-                  <svg className="w-full h-full absolute inset-0 z-0" viewBox="0 0 500 500">
-                    {/* Transit Lines */}
-                    {/* Line 1 (Red line Central) */}
-                    <path d="M 150 180 L 140 280 L 200 340 L 240 390 L 310 480" fill="none" stroke="#ef4444" strokeWidth="4" opacity="0.6" strokeDasharray="6 4" />
-                    {/* Line 2 (Blue Line Metro) */}
-                    <path d="M 80 360 L 200 340 L 240 390" fill="none" stroke="#3b82f6" strokeWidth="4" opacity="0.6" />
-                    
-                    {/* Connection indicators */}
-                    <circle cx="200" cy="340" r="14" fill="none" stroke="#a78bfa" strokeWidth="2" strokeDasharray="4 2" className="animate-spin" style={{ transformOrigin: '200px 340px', animationDuration: '8s' }} />
-                  </svg>
-
-                  {/* Stations Markers */}
-                  {stations.map((st) => (
-                    <button
-                      key={st.id}
-                      onClick={() => setSelectedStationId(selectedStationId === st.id ? null : st.id)}
-                      className={`absolute z-10 flex flex-col items-center group transform -translate-x-1/2 -translate-y-1/2 transition-all duration-300 ${
-                        selectedStationId === st.id ? 'scale-125' : 'hover:scale-110'
-                      }`}
-                      style={{ top: `${st.lat}px`, left: `${st.lng}px` }}
-                    >
-                      {/* Pulse circle */}
-                      <span className={`absolute inline-flex h-6 w-6 rounded-full opacity-35 animate-ping ${getStationStatusColor(st.id)}`} />
-                      {/* Marker Dot */}
-                      <div className={`h-4 w-4 rounded-full border-2 border-white ${getStationStatusColor(st.id)} shadow-md`} />
-                      {/* Station Name Box */}
-                      <span className={`mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold tracking-tight shadow-sm border border-slate-700/50 transition-all ${
-                        selectedStationId === st.id 
-                          ? 'bg-violet-600 text-white border-violet-500 scale-105' 
-                          : 'bg-slate-950/80 text-slate-300'
-                      }`}>
-                        {st.name}
-                      </span>
-                    </button>
-                  ))}
+                {/* MapLibre Map Container */}
+                <div className="relative w-full h-[400px] bg-slate-900/60 rounded-xl border border-slate-800 overflow-hidden">
+                  <TransitMap
+                    stations={stations}
+                    selectedStationId={selectedStationId}
+                    onStationClick={(stationId) =>
+                      setSelectedStationId(selectedStationId === stationId ? null : stationId)
+                    }
+                    getStationStatusColor={getStationStatusColor}
+                  />
 
                   {/* Floating Map Info */}
-                  <div className="absolute bottom-3 right-3 bg-slate-950/90 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-1.5 text-[10px] font-mono text-slate-400">
+                  <div className="absolute bottom-3 right-3 z-10 bg-slate-950/90 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-1.5 text-[10px] font-mono text-slate-400 pointer-events-none">
                     <div className="flex items-center gap-2">
                       <span className="h-2 w-2 rounded-full bg-emerald-500" />
                       <span>All Infrastructure Healthy</span>
@@ -311,11 +313,6 @@ export default function Home() {
                       <span className="h-2 w-2 rounded-full bg-red-500" />
                       <span>Critical (Shutdown/Outage)</span>
                     </div>
-                  </div>
-
-                  {/* Kevin's Map Systems integration note */}
-                  <div className="absolute top-3 left-3 bg-violet-950/60 border border-violet-800/40 rounded-lg px-2 py-1 text-[9px] font-mono text-violet-300 max-w-[190px]">
-                    ⚠️ Kevin: To mount MapLibreGL layers, import maplibre-gl and bind to the container element in `useEffect` referencing OpenStreetMap tiles.
                   </div>
                 </div>
 
@@ -514,6 +511,16 @@ export default function Home() {
                     </div>
                   )}
 
+                  {/* Per-asset health trend */}
+                  {assetHealthTrend.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                        Health Trend
+                      </span>
+                      <HealthTrendChart data={assetHealthTrend} compact />
+                    </div>
+                  )}
+
                   {/* Maintenance Log */}
                   <div className="flex flex-col gap-2">
                     <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
@@ -659,7 +666,7 @@ export default function Home() {
                 <div className="flex flex-col">
                   <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Active Alerts</span>
                   <span className="text-2xl font-bold tracking-tight mt-1 text-red-400">{summary.activeAlerts}</span>
-                  <span className="text-[10px] text-red-500 mt-1">Urgent response required</span>
+                  <span className="text-[10px] text-red-500 mt-1">{activeAlerts.length} unresolved</span>
                 </div>
                 <div className="bg-slate-900 p-3 rounded-xl text-red-400 border border-slate-800">
                   <ShieldAlert className="h-5 w-5" />
@@ -670,7 +677,7 @@ export default function Home() {
                 <div className="flex flex-col">
                   <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Critical Failures</span>
                   <span className="text-2xl font-bold tracking-tight mt-1 text-amber-500">{summary.criticalAssets}</span>
-                  <span className="text-[10px] text-amber-500/70 mt-1">Fail probability &gt; 70%</span>
+                  <span className="text-[10px] text-amber-500/70 mt-1">{assetsAtRisk} total at risk</span>
                 </div>
                 <div className="bg-slate-900 p-3 rounded-xl text-amber-500 border border-slate-800">
                   <AlertTriangle className="h-5 w-5" />
@@ -743,9 +750,16 @@ export default function Home() {
 
                         <div className="flex flex-col gap-1">
                           <h4 className="text-xs font-bold text-slate-200">{alert.title}</h4>
-                          <span className="text-[9px] text-slate-500 uppercase font-mono">
-                            {alert.asset_name} • {alert.station_name} Station
-                          </span>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] text-slate-500 uppercase font-mono">
+                              {alert.asset_name} • {alert.station_name} Station
+                            </span>
+                            {alert.failure_probability !== undefined && (
+                              <span className="font-mono text-[10px] font-bold text-red-400">
+                                {Math.round(alert.failure_probability * 100)}% fail risk
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{alert.message}</p>
                         </div>
                       </div>
@@ -772,31 +786,32 @@ export default function Home() {
                 </div>
 
                 {/* Table list */}
-                <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-900/20">
+                <div className="max-h-[500px] overflow-y-auto overflow-x-auto border border-slate-800 rounded-xl bg-slate-900/20">
                   <table className="w-full border-collapse text-left text-xs">
-                    <thead>
+                    <thead className="sticky top-0 z-10">
                       <tr className="border-b border-slate-800 text-slate-500 font-mono text-[9px] uppercase tracking-wider bg-slate-900/50">
                         <th className="p-3">Asset</th>
                         <th className="p-3">Station</th>
                         <th className="p-3">Health Index</th>
                         <th className="p-3">Fail Probability</th>
+                        <th className="p-3">Status</th>
                         <th className="p-3">Est. Failure</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800">
                       {isInfraLoading ? (
                         <tr>
-                          <td colSpan={5} className="p-8 text-center text-slate-500">Loading schedules...</td>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">Loading schedules...</td>
                         </tr>
                       ) : assets.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="p-8 text-center text-slate-500">No assets in database.</td>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">No assets in database.</td>
                         </tr>
                       ) : (
-                        assets.map((asset) => {
-                          const score = (asset as any).score !== undefined ? (asset as any).score : 100;
-                          const failProb = (asset as any).failure_probability !== undefined ? (asset as any).failure_probability : 0.0;
-                          const estFail = (asset as any).predicted_failure_time;
+                        sortedOperatorAssets.map((asset) => {
+                          const score = asset.score !== undefined ? asset.score : 100;
+                          const failProb = asset.failure_probability !== undefined ? asset.failure_probability : 0.0;
+                          const estFail = asset.predicted_failure_time;
 
                           return (
                             <tr key={asset.id} className="hover:bg-slate-900/40 transition-colors">
@@ -809,28 +824,22 @@ export default function Home() {
                               <td className="p-3 text-slate-400 font-medium">{asset.station_name}</td>
                               <td className="p-3">
                                 <div className="flex items-center gap-2">
-                                  {/* Color coding health bar */}
                                   <div className="h-1.5 w-16 bg-slate-800 rounded-full overflow-hidden">
                                     <div 
-                                      className={`h-full rounded-full ${
-                                        score >= 80 ? 'bg-emerald-500' :
-                                        score >= 50 ? 'bg-amber-500' :
-                                        'bg-red-500'
-                                      }`}
+                                      className={`h-full rounded-full ${getHealthBarColor(score)}`}
                                       style={{ width: `${score}%` }}
                                     />
                                   </div>
-                                  <span className={`font-mono font-bold ${
-                                    score >= 80 ? 'text-emerald-400' :
-                                    score >= 50 ? 'text-amber-400' :
-                                    'text-red-400'
-                                  }`}>
+                                  <span className={`font-mono font-bold ${getHealthTextColor(score)}`}>
                                     {score}
                                   </span>
                                 </div>
                               </td>
-                              <td className="p-3 font-mono text-slate-300 font-semibold">
+                              <td className={`p-3 font-mono font-semibold ${getFailureProbabilityColor(failProb)}`}>
                                 {(failProb * 100).toFixed(0)}%
+                              </td>
+                              <td className="p-3">
+                                <StatusBadge status={asset.status} />
                               </td>
                               <td className="p-3">
                                 {estFail ? (
@@ -855,13 +864,25 @@ export default function Home() {
 
             </div>
 
+            {/* Analytics Charts Row */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-8">
+                <HealthTrendChart data={healthTrendData} isLoading={isHealthTrendLoading} />
+              </div>
+              <div className="lg:col-span-4">
+                <RiskDistributionChart data={riskDistribution} />
+              </div>
+            </div>
+
+            <TypeBreakdownChart data={typeBreakdown} />
+
           </div>
         )}
 
       </main>
 
       {/* Footer */}
-      <footer className="w-full border-t border-slate-900 py-6 mt-12 text-center text-[10px] text-slate-600 font-mono">
+      <footer className={`w-full border-t border-slate-900 py-6 text-center text-[10px] text-slate-600 font-mono ${viewMode === 'operator' ? 'shrink-0' : 'mt-12'}`}>
         Transit Infrastructure Intelligence • Hackathon Foundation Starter v1.0.0
       </footer>
     </div>

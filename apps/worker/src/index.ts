@@ -13,7 +13,8 @@ import {
   Report, 
   HealthScore, 
   Alert, 
-  DashboardSummaryResponse
+  DashboardSummaryResponse,
+  HealthTrendPoint
 } from '@transitiq/types';
 
 type Bindings = {
@@ -267,10 +268,15 @@ app.get('/api/reports/:infrastructureId', async (c) => {
 app.get('/api/alerts', async (c) => {
   try {
     const query = `
-      SELECT a.*, i.name as asset_name, s.name as station_name
+      SELECT a.*, i.name as asset_name, s.name as station_name, hs.failure_probability
       FROM alerts a
       LEFT JOIN infrastructure i ON a.infrastructure_id = i.id
       LEFT JOIN stations s ON i.station_id = s.id
+      LEFT JOIN (
+        SELECT infrastructure_id, failure_probability,
+               ROW_NUMBER() OVER (PARTITION BY infrastructure_id ORDER BY computed_at DESC) as rn
+        FROM health_scores
+      ) hs ON a.infrastructure_id = hs.infrastructure_id AND hs.rn = 1
       ORDER BY a.created_at DESC
     `;
     const { results } = await c.env.DB.prepare(query).all();
@@ -357,7 +363,37 @@ app.get('/api/health/:id', async (c) => {
   }
 });
 
-// 6. Dashboard Summary Endpoint (KV Cached)
+// 6. Dashboard Health Trend Endpoint
+app.get('/api/dashboard/health-trend', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(`
+      SELECT
+        DATE(created_at) as date,
+        AVG(health_score) as avg_health,
+        COUNT(*) as incidents
+      FROM infrastructure_status_history
+      WHERE created_at >= datetime('now', '-7 days')
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `).all<{ date: string; avg_health: number; incidents: number }>();
+
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const trend: HealthTrendPoint[] = (results || []).map((row) => {
+      const date = new Date(row.date + 'T12:00:00');
+      return {
+        day: dayNames[date.getDay()],
+        health: Math.round(row.avg_health),
+        incidents: row.incidents,
+      };
+    });
+
+    return c.json({ success: true, data: trend });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// 7. Dashboard Summary Endpoint (KV Cached)
 app.get('/api/dashboard/summary', async (c) => {
   try {
     // Attempt cache read

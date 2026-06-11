@@ -34,4 +34,5 @@ export const api = {
       method: 'POST',
     }),
   getDashboardSummary: () => fetchApi('/api/dashboard/summary'),
+  getHealthTrend: () => fetchApi('/api/dashboard/health-trend'),
 };

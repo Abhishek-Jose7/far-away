@@ -68,6 +68,13 @@ export interface Alert {
   created_at: string;
   asset_name?: string; // joined
   station_name?: string; // joined
+  failure_probability?: number; // joined from health_scores
+}
+
+export interface HealthTrendPoint {
+  day: string;
+  health: number;
+  incidents?: number;
 }
 
 export interface MaintenanceLog {

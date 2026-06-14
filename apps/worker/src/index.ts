@@ -140,7 +140,7 @@ app.post('/api/reports', async (c) => {
       await c.env.DB.prepare(`
         INSERT INTO users (id, clerk_id, name, email, role, created_at)
         VALUES (?, ?, ?, ?, 'commuter', ?)
-      `).bind(body.user_id, `clerk_${body.user_id}`, 'Citizen Commuter', `${body.user_id}@example.com', timestamp).run();
+      `).bind(body.user_id, `clerk_${body.user_id}`, 'Citizen Commuter', `${body.user_id}@example.com`, timestamp).run();
     } else {
       role = user.role;
     }

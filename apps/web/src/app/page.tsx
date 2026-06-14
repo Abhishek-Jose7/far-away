@@ -1329,9 +1329,107 @@ export default function Home() {
               )}
 
               {activeCommuterScreen === 'report' && (
-                <div className="text-xs text-slate-500 text-center py-4">
-                  Please use the Desktop/Laptop view or expand the sidebar screen to complete form submissions.
-                </div>
+                <form onSubmit={handleReportSubmit} className="flex flex-col gap-3">
+                  <div className="flex justify-between items-center pb-1">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase">Malfunction Details</span>
+                    <button 
+                      type="button" 
+                      onClick={() => setActiveCommuterScreen('facility')}
+                      className="text-[10px] text-slate-500 hover:text-slate-850 font-bold"
+                    >
+                      Back
+                    </button>
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[8px] font-bold text-slate-400 uppercase block mb-1">Category</label>
+                      <select
+                        value={reportForm.category}
+                        onChange={(e) => setReportForm({ ...reportForm, category: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-800 outline-none"
+                      >
+                        <option value="toilet">Toilet</option>
+                        <option value="escalator">Escalator</option>
+                        <option value="lift">Lift / Elevator</option>
+                        <option value="water">Water Fountain</option>
+                        <option value="footbridge">Skywalk</option>
+                        <option value="charging_point">EV Charger</option>
+                        <option value="lighting">Lighting</option>
+                        <option value="safety">Safety</option>
+                        <option value="other">Other</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[8px] font-bold text-slate-400 uppercase block mb-1">Severity</label>
+                      <select
+                        value={reportForm.severity}
+                        onChange={(e) => setReportForm({ ...reportForm, severity: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-1.5 text-xs font-semibold text-slate-800 outline-none"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="col-span-2">
+                      <label className="text-[8px] font-bold text-slate-400 uppercase block mb-1">Location Details</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Platform 3 near Stairs"
+                        value={reportForm.location}
+                        onChange={(e) => setReportForm({ ...reportForm, location: e.target.value })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {(reportForm.category === 'toilet' || reportForm.category === 'water') && (
+                    <div>
+                      <label className="text-[8px] font-bold text-slate-400 uppercase block mb-1">
+                        Cleanliness Rating: {reportForm.cleanliness_rating}/5
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={reportForm.cleanliness_rating}
+                          onChange={(e) => setReportForm({ ...reportForm, cleanliness_rating: parseInt(e.target.value) })}
+                          className="w-full accent-orange-500 cursor-pointer"
+                        />
+                        <span className="text-[10px] font-bold text-orange-655 font-mono">{reportForm.cleanliness_rating} Stars</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-[8px] font-bold text-slate-400 uppercase block mb-1">Description</label>
+                    <textarea
+                      rows={2}
+                      placeholder="Malfunction details..."
+                      value={reportForm.description}
+                      onChange={(e) => setReportForm({ ...reportForm, description: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 font-semibold focus:outline-none focus:border-orange-500"
+                      required
+                    />
+                  </div>
+
+                  {successMsg ? (
+                    <div className="p-2 bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] rounded-xl text-center font-bold">{successMsg}</div>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={reportMutation.isPending}
+                      className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-md shadow-orange-500/20"
+                    >
+                      {reportMutation.isPending ? 'Submitting...' : 'Submit Report'}
+                    </button>
+                  )}
+                </form>
               )}
             </div>
           ) : (

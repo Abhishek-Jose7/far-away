@@ -25,24 +25,24 @@ export function HealthTrendChart({ data, isLoading, compact }: HealthTrendChartP
         <div className="flex items-center gap-2">
           <TrendingUp className="h-4 w-4 text-emerald-400" />
           <div>
-            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-300">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800">
               Infrastructure Health Trend
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">7-day fleet average</p>
           </div>
         </div>
-        <span className="text-[10px] font-mono text-slate-500 hidden sm:inline">
+        <span className="text-[10px] font-mono text-slate-400 hidden sm:inline">
           7-DAY AVG
         </span>
       </div>
 
       <div className={compact ? 'h-32' : 'h-56'}>
         {isLoading ? (
-          <div className="flex items-center justify-center h-full text-xs text-slate-500">
+          <div className="flex items-center justify-center h-full text-xs text-slate-400">
             Loading trend data...
           </div>
         ) : data.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-xs text-slate-500">
+          <div className="flex items-center justify-center h-full text-xs text-slate-400">
             No historical data available yet.
           </div>
         ) : (
@@ -50,16 +50,16 @@ export function HealthTrendChart({ data, isLoading, compact }: HealthTrendChartP
             <AreaChart data={data} margin={{ top: 8, right: 16, left: -16, bottom: 0 }}>
               <defs>
                 <linearGradient id="healthFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#10b981" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="#10b981" stopOpacity={0.02} />
+                  <stop offset="0%" stopColor="#f97316" stopOpacity={0.25} />
+                  <stop offset="100%" stopColor="#f97316" stopOpacity={0.01} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
               <XAxis
                 dataKey="day"
                 tickLine={false}
-                axisLine={{ stroke: '#334155' }}
-                tick={{ fontSize: 11, fill: '#94a3b8' }}
+                axisLine={{ stroke: '#e2e8f0' }}
+                tick={{ fontSize: 11, fill: '#64748b' }}
               />
               <YAxis
                 domain={[0, 100]}
@@ -69,22 +69,23 @@ export function HealthTrendChart({ data, isLoading, compact }: HealthTrendChartP
               />
               <Tooltip
                 contentStyle={{
-                  background: '#0f172a',
-                  border: '1px solid #334155',
-                  borderRadius: '8px',
+                  background: '#ffffff',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '12px',
                   fontSize: 12,
-                  color: '#e2e8f0',
+                  color: '#0f172a',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
                 }}
-                labelStyle={{ color: '#94a3b8' }}
+                labelStyle={{ color: '#64748b' }}
               />
               <Area
                 type="monotone"
                 dataKey="health"
-                stroke="#10b981"
+                stroke="#f97316"
                 strokeWidth={2}
                 fill="url(#healthFill)"
-                dot={{ r: 3, fill: '#0f172a', stroke: '#10b981', strokeWidth: 2 }}
-                activeDot={{ r: 5, fill: '#10b981', stroke: '#0f172a', strokeWidth: 2 }}
+                dot={{ r: 3, fill: '#ffffff', stroke: '#f97316', strokeWidth: 2 }}
+                activeDot={{ r: 5, fill: '#f97316', stroke: '#ffffff', strokeWidth: 2 }}
                 name="Avg Health"
               />
             </AreaChart>

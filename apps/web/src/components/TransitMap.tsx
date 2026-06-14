@@ -29,28 +29,52 @@ function createStationMarkerElement(
   statusClass: string,
   onStationClick: (stationId: string) => void,
 ): HTMLDivElement {
-  const color = STATUS_HEX[statusClass] ?? '#10b981';
+  const el = document.createElement('div');
+  el.className = 'custom-maplibre-marker';
+  el.style.cursor = 'pointer';
 
-  const wrapper = document.createElement('div');
-  wrapper.className = 'flex flex-col items-center cursor-pointer';
-  wrapper.style.transform = isSelected ? 'scale(1.25)' : 'scale(1)';
-  wrapper.style.transition = 'transform 0.3s';
+  let markerColorClass = 'bg-emerald-500';
+  let glowClass = 'glow-healthy';
+  
+  if (statusClass.includes('red') || statusClass.includes('rose') || statusClass.includes('critical')) {
+    markerColorClass = 'bg-rose-500';
+    glowClass = 'glow-critical';
+  } else if (statusClass.includes('amber') || statusClass.includes('warning') || statusClass.includes('yellow')) {
+    markerColorClass = 'bg-amber-500';
+    glowClass = 'glow-warning';
+  }
 
-  const dot = document.createElement('div');
-  dot.style.width = '16px';
-  dot.style.height = '16px';
-  dot.style.borderRadius = '9999px';
-  dot.style.border = '2px solid white';
-  dot.style.backgroundColor = color;
-  dot.style.boxShadow = '0 2px 6px rgba(0,0,0,0.4)';
+  if (isSelected) {
+    // Pulsing target concentric rings
+    el.innerHTML = `
+      <div class="relative flex flex-col items-center justify-center">
+        <span class="absolute inline-flex h-10 w-10 rounded-full bg-orange-500/20 animate-ring-pulse"></span>
+        <span class="absolute inline-flex h-7 w-7 rounded-full bg-orange-500/35"></span>
+        <div class="h-6 w-6 rounded-full border-4 border-white bg-slate-900 shadow-xl z-10 flex items-center justify-center">
+          <div class="h-2 w-2 rounded-full bg-white animate-pulse"></div>
+        </div>
+      </div>
+    `;
+  } else {
+    // Regular marker
+    el.innerHTML = `
+      <div class="relative flex flex-col items-center">
+        <span class="absolute inline-flex h-7 w-7 rounded-full opacity-35 animate-ring-pulse ${markerColorClass} ${glowClass}"></span>
+        <div class="h-4.5 w-4.5 rounded-full border-2 border-white shadow-lg ${markerColorClass} ${glowClass}"></div>
+      </div>
+    `;
+  }
 
-  const label = document.createElement('span');
+  // Label below marker
+  const label = document.createElement('div');
   label.textContent = station.name;
   label.className = isSelected
-    ? 'mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold tracking-tight shadow-sm border border-violet-500 bg-violet-600 text-white'
-    : 'mt-1.5 px-2 py-0.5 rounded text-[10px] font-bold tracking-tight shadow-sm border border-slate-700/50 bg-slate-950/80 text-slate-300';
-
-  wrapper.appendChild(dot);
+    ? 'mt-1.5 px-2 py-0.5 rounded text-[9px] font-bold tracking-tight shadow-md border border-orange-500 bg-orange-500 text-white select-none whitespace-nowrap'
+    : 'mt-1.5 px-2 py-0.5 rounded text-[9px] font-bold tracking-tight shadow-sm border border-slate-200 bg-white text-slate-700 select-none whitespace-nowrap';
+  
+  const wrapper = document.createElement('div');
+  wrapper.className = 'flex flex-col items-center justify-center';
+  wrapper.appendChild(el);
   wrapper.appendChild(label);
 
   wrapper.addEventListener('click', (e) => {
@@ -94,11 +118,12 @@ export function TransitMap({
           },
         ],
       },
-      center: [72.8777, 19.076],
-      zoom: 10,
+      center: [72.887, 19.076],
+      zoom: 10.3,
+      attributionControl: false
     });
 
-    map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
 
     const bounds = new maplibregl.LngLatBounds();
     stations.forEach((station) => bounds.extend([station.lng, station.lat]));
@@ -106,6 +131,124 @@ export function TransitMap({
     map.on('load', () => {
       if (!bounds.isEmpty()) {
         map.fitBounds(bounds, { padding: 50, maxZoom: 11 });
+      }
+
+      // Order stations for red route connecting them CSMT -> Dadar -> Andheri -> Kurla -> Ghatkopar -> Thane
+      const redRouteOrder = ['st_cst', 'st_dadar', 'st_andheri', 'st_kurla', 'st_ghatkopar', 'st_thane'];
+      const redLineCoords = redRouteOrder
+        .map(id => stations.find(s => s.id === id))
+        .filter((s): s is TransitMapStation => !!s)
+        .map(s => [s.lng, s.lat]);
+
+      // Blue route connects Andheri -> Kurla -> Ghatkopar
+      const blueRouteOrder = ['st_andheri', 'st_kurla', 'st_ghatkopar'];
+      const blueLineCoords = blueRouteOrder
+        .map(id => stations.find(s => s.id === id))
+        .filter((s): s is TransitMapStation => !!s)
+        .map(s => [s.lng, s.lat]);
+
+      // Add Red Route Source
+      if (redLineCoords.length > 1) {
+        map.addSource('red-line', {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            properties: {},
+            geometry: {
+              type: 'LineString',
+              coordinates: redLineCoords
+            }
+          }
+        });
+
+        // Casing (white outline)
+        map.addLayer({
+          id: 'red-line-bg',
+          type: 'line',
+          source: 'red-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ffffff',
+            'line-width': 6.5
+          }
+        });
+
+        // Glow Layer
+        map.addLayer({
+          id: 'red-line-glow',
+          type: 'line',
+          source: 'red-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ff6b00',
+            'line-width': 8,
+            'line-opacity': 0.2
+          }
+        });
+
+        // Main line
+        map.addLayer({
+          id: 'red-line-main',
+          type: 'line',
+          source: 'red-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ff6b00',
+            'line-width': 3.5
+          }
+        });
+      }
+
+      // Add Blue Route Source
+      if (blueLineCoords.length > 1) {
+        map.addSource('blue-line', {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            properties: {},
+            geometry: {
+              type: 'LineString',
+              coordinates: blueLineCoords
+            }
+          }
+        });
+
+        // Casing (white outline)
+        map.addLayer({
+          id: 'blue-line-bg',
+          type: 'line',
+          source: 'blue-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ffffff',
+            'line-width': 6.5
+          }
+        });
+
+        // Glow Layer
+        map.addLayer({
+          id: 'blue-line-glow',
+          type: 'line',
+          source: 'blue-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ea580c',
+            'line-width': 8,
+            'line-opacity': 0.2
+          }
+        });
+
+        // Main line
+        map.addLayer({
+          id: 'blue-line-main',
+          type: 'line',
+          source: 'blue-line',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#ea580c',
+            'line-width': 3.5
+          }
+        });
       }
     });
 
@@ -117,7 +260,6 @@ export function TransitMap({
       map.remove();
       mapRef.current = null;
     };
-    // Map initializes once; markers update in a separate effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -141,9 +283,6 @@ export function TransitMap({
 
         const marker = new maplibregl.Marker({ element, anchor: 'center' })
           .setLngLat([station.lng, station.lat])
-          .setPopup(
-            new maplibregl.Popup({ offset: 20, closeButton: false }).setText(station.name),
-          )
           .addTo(map);
 
         markersRef.current.push(marker);
@@ -153,9 +292,19 @@ export function TransitMap({
     if (map.loaded()) {
       renderMarkers();
     } else {
-      map.once('load', renderMarkers);
+      map.on('load', renderMarkers);
     }
   }, [stations, selectedStationId, onStationClick, getStationStatusColor]);
+
+  // Handle resizing on selected hub/panel toggle
+  useEffect(() => {
+    if (mapRef.current) {
+      const timer = setTimeout(() => {
+        mapRef.current?.resize();
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedStationId]);
 
   return (
     <div

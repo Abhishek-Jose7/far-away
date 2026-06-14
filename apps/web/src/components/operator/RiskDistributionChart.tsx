@@ -20,9 +20,9 @@ export function RiskDistributionChart({ data }: RiskDistributionChartProps) {
   return (
     <div className="glass-panel rounded-2xl p-6 flex flex-col gap-4 h-full">
       <div className="flex items-center gap-2">
-        <PieIcon className="h-4 w-4 text-violet-400" />
+        <PieIcon className="h-4 w-4 text-orange-500" />
         <div>
-          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-300">
+          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800">
             Risk Distribution
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">Fleet status breakdown</p>
@@ -40,7 +40,7 @@ export function RiskDistributionChart({ data }: RiskDistributionChartProps) {
                 innerRadius={42}
                 outerRadius={64}
                 paddingAngle={2}
-                stroke="#1e293b"
+                stroke="#ffffff"
                 strokeWidth={2}
               >
                 {data.map((d) => (
@@ -49,18 +49,19 @@ export function RiskDistributionChart({ data }: RiskDistributionChartProps) {
               </Pie>
               <Tooltip
                 contentStyle={{
-                  background: '#0f172a',
-                  border: '1px solid #334155',
-                  borderRadius: '8px',
+                  background: '#ffffff',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '12px',
                   fontSize: 12,
-                  color: '#e2e8f0',
+                  color: '#0f172a',
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.05)'
                 }}
               />
             </PieChart>
           </ResponsiveContainer>
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-2xl font-bold text-slate-100 tabular-nums">{total}</span>
-            <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">
+            <span className="text-2xl font-bold text-slate-800 tabular-nums">{total}</span>
+            <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">
               Assets
             </span>
           </div>
@@ -72,7 +73,7 @@ export function RiskDistributionChart({ data }: RiskDistributionChartProps) {
             return (
               <li
                 key={d.key}
-                className="flex items-center justify-between gap-2 bg-slate-900/40 border border-slate-800 rounded-lg px-3 py-2"
+                className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200/60 rounded-xl px-3 py-2"
               >
                 <span className="flex items-center gap-2">
                   <span
@@ -80,11 +81,11 @@ export function RiskDistributionChart({ data }: RiskDistributionChartProps) {
                     style={{ background: colorMap[d.key] }}
                     aria-hidden
                   />
-                  <span className="text-xs font-semibold text-slate-300">{d.name}</span>
+                  <span className="text-xs font-bold text-slate-700">{d.name}</span>
                 </span>
-                <span className="font-mono text-xs font-bold text-slate-200 tabular-nums">
+                <span className="font-mono text-xs font-bold text-slate-800 tabular-nums">
                   {d.value}
-                  <span className="ml-1 text-[10px] font-medium text-slate-500">{pct}%</span>
+                  <span className="ml-1 text-[10px] font-medium text-slate-400">{pct}%</span>
                 </span>
               </li>
             );

@@ -57,7 +57,9 @@ export default function Home() {
     filterStatus,
     setFilterStatus,
     filterType,
-    setFilterType
+    setFilterType,
+    currentUser,
+    setCurrentUser
   } = useTransitStore();
 
   // Local state for reporting modal / form
@@ -197,7 +199,7 @@ export default function Home() {
     }
     reportMutation.mutate({
       infrastructure_id: reportForm.infrastructure_id,
-      user_id: 'usr_demo_1', // Demo commuter user ID
+      user_id: currentUser, // Dynamic active user ID from store
       description: reportForm.description,
       severity: reportForm.severity
     });
@@ -225,7 +227,10 @@ export default function Home() {
         <div className="flex items-center gap-4">
           <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-1">
             <button
-              onClick={() => setViewMode('commuter')}
+              onClick={() => {
+                setViewMode('commuter');
+                setCurrentUser('usr_1'); // Switch to commuter Rohan Sharma
+              }}
               className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${
                 viewMode === 'commuter'
                   ? 'bg-violet-600 text-white shadow-md'
@@ -235,7 +240,10 @@ export default function Home() {
               Commuter App
             </button>
             <button
-              onClick={() => setViewMode('operator')}
+              onClick={() => {
+                setViewMode('operator');
+                setCurrentUser('usr_3'); // Switch to operator Vikram Singh
+              }}
               className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${
                 viewMode === 'operator'
                   ? 'bg-violet-600 text-white shadow-md'
@@ -254,12 +262,25 @@ export default function Home() {
             <RefreshCw className="h-4 w-4" />
           </button>
 
-          {/* User Profile Mock */}
+          {/* User Profile Selector Dropdown */}
           <div className="flex items-center gap-2 border-l border-slate-800 pl-4">
-            <div className="bg-slate-800 h-8 w-8 rounded-full flex items-center justify-center border border-slate-700 text-slate-300">
+            <div className="bg-slate-800 h-8 w-8 rounded-full flex items-center justify-center border border-slate-700 text-slate-300 hidden sm:flex">
               <UserIcon className="h-4 w-4" />
             </div>
-            <span className="text-xs text-slate-400 hidden md:inline-block font-mono">usr_demo_1</span>
+            <div className="flex flex-col">
+              <span className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">Active Profile</span>
+              <select
+                value={currentUser}
+                onChange={(e) => setCurrentUser(e.target.value)}
+                className="bg-transparent border-0 text-xs text-slate-300 font-semibold focus:ring-0 focus:outline-none p-0 cursor-pointer hover:text-violet-400 transition-colors"
+              >
+                <option value="usr_1" className="bg-slate-950 text-slate-300">Rohan Sharma (Commuter)</option>
+                <option value="usr_2" className="bg-slate-950 text-slate-300">Priya Patel (Commuter)</option>
+                <option value="usr_3" className="bg-slate-950 text-slate-300">Vikram Singh (Operator)</option>
+                <option value="usr_4" className="bg-slate-950 text-slate-300">Anjali Desai (Admin)</option>
+                <option value="usr_5" className="bg-slate-950 text-slate-300">Abhishek Patil (Operator)</option>
+              </select>
+            </div>
           </div>
         </div>
       </header>

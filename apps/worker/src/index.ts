@@ -20,7 +20,6 @@ import {
 type Bindings = {
   DB: D1Database;
   TRANSIT_KV: KVNamespace;
-  REPORT_QUEUE: Queue<any>;
 };
 
 type Variables = {
@@ -187,6 +186,113 @@ app.get('/api/infrastructure/:id', async (c) => {
 
 // 3. Citizen Reports Endpoints
 // Authenticated route
+// SYNCHRONOUS AGENT PIPELINE RUNNER
+// Executes Verification -> Prediction -> Alert Agents sequentially in a single execution thread
+const runAgentPipeline = async (
+  db: D1Database,
+  kv: KVNamespace,
+  reportId: string,
+  infrastructureId: string,
+  userId: string
+) => {
+  // 1. VERIFICATION AGENT STEP
+  const user = await db.prepare('SELECT role FROM users WHERE id = ?').bind(userId).first<{ role: string }>();
+  const userRole = (user?.role || 'commuter') as any;
+
+  // Count recent commuter reports (past 24h)
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const countResult = await db.prepare(`
+    SELECT COUNT(*) as count 
+    FROM reports 
+    WHERE infrastructure_id = ? AND created_at >= ?
+  `).bind(infrastructureId, yesterday).first<{ count: number }>();
+
+  const recentReportsCount = countResult?.count || 1;
+  const confidence = calculateConfidenceScore(recentReportsCount, userRole);
+
+  // Save confidence score in D1
+  await db.prepare('UPDATE reports SET confidence = ? WHERE id = ?').bind(confidence, reportId).run();
+
+  // 2. PREDICTION AGENT STEP
+  const asset = await db.prepare('SELECT type, last_maintenance, name FROM infrastructure WHERE id = ?').bind(infrastructureId).first<Infrastructure>();
+  if (!asset) return;
+
+  const activeReports = await db.prepare(`
+    SELECT severity, confidence FROM reports 
+    WHERE infrastructure_id = ? AND created_at >= ?
+  `).bind(infrastructureId, yesterday).all<Report>();
+
+  const scoringInputs = (activeReports.results || []).map(r => ({
+    severity: r.severity as any,
+    confidence: r.confidence
+  }));
+
+  // Calculate health indexes using scoring-engine
+  const prediction = calculateHealthAndPrediction(
+    asset.type,
+    asset.last_maintenance,
+    scoringInputs
+  );
+
+  // Write updated health metrics row in D1
+  const scoreId = `hs_${crypto.randomUUID()}`;
+  await db.prepare(`
+    INSERT INTO health_scores (id, infrastructure_id, score, failure_probability, predicted_failure_time, computed_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).bind(
+    scoreId, 
+    infrastructureId, 
+    prediction.healthScore, 
+    prediction.failureProbability, 
+    prediction.predictedFailureHours ? new Date(Date.now() + prediction.predictedFailureHours * 60 * 60 * 1000).toISOString() : null,
+    new Date().toISOString()
+  ).run();
+
+  // Log historical progression for graphs
+  const historyId = `sh_${crypto.randomUUID()}`;
+  await db.prepare(`
+    INSERT INTO infrastructure_status_history (id, infrastructure_id, health_score, failure_probability, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).bind(
+    historyId, 
+    infrastructureId, 
+    prediction.healthScore, 
+    prediction.failureProbability, 
+    new Date().toISOString()
+  ).run();
+
+  // Update current asset status in D1
+  await db.prepare('UPDATE infrastructure SET status = ? WHERE id = ?').bind(prediction.status, infrastructureId).run();
+
+  // 3. ALERT AGENT STEP
+  if (prediction.failureProbability > 0.70) {
+    const existingAlert = await db.prepare(`
+      SELECT id FROM alerts 
+      WHERE infrastructure_id = ? AND resolved = 0
+    `).bind(infrastructureId).first();
+
+    if (!existingAlert) {
+      const alertId = `alt_${crypto.randomUUID()}`;
+      const alertTitle = `Predictive Alert: High Outage Risk on ${asset.name}`;
+      const alertMsg = `Calculated failure probability is ${(prediction.failureProbability * 100).toFixed(0)}%. Asset health index is ${prediction.healthScore}/100. Scheduled maintenance dispatch recommended.`;
+      
+      await db.prepare(`
+        INSERT INTO alerts (id, infrastructure_id, title, message, severity, resolved, created_at)
+        VALUES (?, ?, ?, ?, 'critical', 0, ?)
+      `).bind(
+        alertId, 
+        infrastructureId, 
+        alertTitle, 
+        alertMsg, 
+        new Date().toISOString()
+      ).run();
+    }
+  }
+
+  // Clear dashboard summary cache in KV
+  await kv.delete('dashboard_summary');
+};
+
 app.post('/api/reports', authMiddleware, async (c) => {
   try {
     const body = await c.req.json();
@@ -227,20 +333,18 @@ app.post('/api/reports', authMiddleware, async (c) => {
       timestamp
     ).run();
 
-    // Step 2: Dispatch processing to the collapsed REPORT_QUEUE
-    await c.env.REPORT_QUEUE.send({
+    // Step 2: Execute Verification & Prediction synchronous pipeline immediately
+    await runAgentPipeline(
+      c.env.DB,
+      c.env.TRANSIT_KV,
       reportId,
-      infrastructureId: payload.infrastructure_id,
-      userId: payload.user_id,
-      timestamp
-    });
-
-    // Invalidate dashboard summary cache
-    await c.env.TRANSIT_KV.delete('dashboard_summary');
+      payload.infrastructure_id,
+      payload.user_id
+    );
 
     return c.json({ 
       success: true, 
-      message: 'Report received and pushed to prediction engine', 
+      message: 'Report received and processed by prediction engine', 
       data: { reportId } 
     });
   } catch (error: any) {
@@ -430,130 +534,4 @@ app.get('/api/dashboard/summary', async (c) => {
   }
 });
 
-// COLLAPSED SINGLE QUEUE CONSUMER PROCESSOR
-// Implements the Verification Agent -> Prediction Agent -> Alert Agent sequentially
-const handleQueueMessage = async (
-  batch: MessageBatch<any>, 
-  env: Bindings
-) => {
-  for (const message of batch.messages) {
-    const { reportId, infrastructureId, userId } = message.body;
-
-    try {
-      // 1. VERIFICATION AGENT STEP
-      // Fetch reporter role
-      const user = await env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(userId).first<{ role: string }>();
-      const userRole = (user?.role || 'commuter') as any;
-
-      // Count recent commuter reports (past 24h)
-      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const countResult = await env.DB.prepare(`
-        SELECT COUNT(*) as count 
-        FROM reports 
-        WHERE infrastructure_id = ? AND created_at >= ?
-      `).bind(infrastructureId, yesterday).first<{ count: number }>();
-
-      const recentReportsCount = countResult?.count || 1;
-      const confidence = calculateConfidenceScore(recentReportsCount, userRole);
-
-      // Save confidence score in D1
-      await env.DB.prepare('UPDATE reports SET confidence = ? WHERE id = ?').bind(confidence, reportId).run();
-
-      // 2. PREDICTION AGENT STEP
-      // Fetch asset type and maintenance timestamp
-      const asset = await env.DB.prepare('SELECT type, last_maintenance, name FROM infrastructure WHERE id = ?').bind(infrastructureId).first<Infrastructure>();
-      if (!asset) {
-        message.ack();
-        continue;
-      }
-
-      // Fetch all reports in the past 24 hours to run the aggregate prediction equation
-      const activeReports = await env.DB.prepare(`
-        SELECT severity, confidence FROM reports 
-        WHERE infrastructure_id = ? AND created_at >= ?
-      `).bind(infrastructureId, yesterday).all<Report>();
-
-      const scoringInputs = (activeReports.results || []).map(r => ({
-        severity: r.severity as any,
-        confidence: r.confidence
-      }));
-
-      // Calculate health indexes using scoring-engine
-      const prediction = calculateHealthAndPrediction(
-        asset.type,
-        asset.last_maintenance,
-        scoringInputs
-      );
-
-      // Write updated health metrics row in D1
-      const scoreId = `hs_${crypto.randomUUID()}`;
-      await env.DB.prepare(`
-        INSERT INTO health_scores (id, infrastructure_id, score, failure_probability, predicted_failure_time, computed_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).bind(
-        scoreId, 
-        infrastructureId, 
-        prediction.healthScore, 
-        prediction.failureProbability, 
-        prediction.predictedFailureHours ? new Date(Date.now() + prediction.predictedFailureHours * 60 * 60 * 1000).toISOString() : null,
-        new Date().toISOString()
-      ).run();
-
-      // NEW: Log historical progression for graphs
-      const historyId = `sh_${crypto.randomUUID()}`;
-      await env.DB.prepare(`
-        INSERT INTO infrastructure_status_history (id, infrastructure_id, health_score, failure_probability, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).bind(
-        historyId, 
-        infrastructureId, 
-        prediction.healthScore, 
-        prediction.failureProbability, 
-        new Date().toISOString()
-      ).run();
-
-      // Update current asset status in D1
-      await env.DB.prepare('UPDATE infrastructure SET status = ? WHERE id = ?').bind(prediction.status, infrastructureId).run();
-
-      // 3. ALERT AGENT STEP
-      if (prediction.failureProbability > 0.70) {
-        // Prevent duplicate alert fatigue
-        const existingAlert = await env.DB.prepare(`
-          SELECT id FROM alerts 
-          WHERE infrastructure_id = ? AND resolved = 0
-        `).bind(infrastructureId).first();
-
-        if (!existingAlert) {
-          const alertId = `alt_${crypto.randomUUID()}`;
-          const alertTitle = `Predictive Alert: High Outage Risk on ${asset.name}`;
-          const alertMsg = `Calculated failure probability is ${(prediction.failureProbability * 100).toFixed(0)}%. Asset health index is ${prediction.healthScore}/100. Scheduled maintenance dispatch recommended.`;
-          
-          await env.DB.prepare(`
-            INSERT INTO alerts (id, infrastructure_id, title, message, severity, resolved, created_at)
-            VALUES (?, ?, ?, ?, 'critical', 0, ?)
-          `).bind(
-            alertId, 
-            infrastructureId, 
-            alertTitle, 
-            alertMsg, 
-            new Date().toISOString()
-          ).run();
-        }
-      }
-
-      message.ack();
-
-    } catch (err) {
-      console.error(`Error processing queue message for asset ${infrastructureId}:`, err);
-      message.retry();
-    }
-  }
-
-  // Clear dashboard summary cache in KV
-  await env.TRANSIT_KV.delete('dashboard_summary');
-};
-
-export default {
-  fetch: app.fetch,
-  queue: handleQueueMessage
-};
+export default app;

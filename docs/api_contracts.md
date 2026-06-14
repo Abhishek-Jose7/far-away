@@ -1,74 +1,148 @@
-# API Contracts - Transit Infrastructure Intelligence
+# API Contracts - TransitIQ Backend
 
-This documentation outlines the endpoint definitions, payload schemas, and mock response payloads for the Transit Infrastructure API.
+This documentation outlines endpoint definitions, validation schemas, and payload examples for **TransitIQ** services.
 
 ---
 
-## 1. Infrastructure API
+## Distributed Agent Pipeline (4 Queues)
 
-### Get All Assets
-- **Route**: `GET /api/infrastructure`
-- **Response Status**: `200 OK`
-- **Response Format**:
+When a report is submitted, it flows through a sequential chain of 4 queues:
+
+1. **Ingestion Queue (`transitiq-report-ingestion`)**: Handles initial entry checking.
+2. **Verification Queue (`transitiq-verification`)**: Aggregates matching reports for the asset to calculate report confidence.
+3. **Prediction Queue (`transitiq-prediction`)**: Evaluates maintenance intervals and active reports to compute the reliability index.
+4. **Alert Queue (`transitiq-alerts`)**: Checks thresholds and issues edge notifications / writes to cache.
+
+---
+
+## 1. Stations API
+
+### Get All Stations
+- **Route**: `GET /api/stations`
+- **Response**: `200 OK`
 ```json
 {
   "success": true,
   "data": [
     {
-      "id": "inf_cst_esc2",
-      "station_id": "st_cst",
-      "name": "Main Exit Escalator",
-      "type": "escalator",
-      "status": "warning",
-      "latitude": 18.9405,
-      "longitude": 72.8351,
-      "last_maintenance": "2026-05-15 10:00:00",
-      "created_at": "2026-05-01 00:00:00",
-      "station_name": "Chhatrapati Shivaji Maharaj Terminus (CSMT)",
-      "score": 72,
-      "failure_probability": 0.28,
-      "predicted_failure_time": "2026-07-10 12:00:00"
+      "id": "st_dadar",
+      "name": "Dadar Junction",
+      "city": "Mumbai",
+      "latitude": 19.0178,
+      "longitude": 72.8478,
+      "created_at": "2026-05-01 00:00:00"
     }
   ]
 }
 ```
 
-### Get Single Asset Detail
-- **Route**: `GET /api/infrastructure/:id`
-- **Response Status**: `200 OK`
-- **Response Format**:
+### Get Single Station Details (with Assets)
+- **Route**: `GET /api/stations/:id`
+- **Response**: `200 OK`
 ```json
 {
   "success": true,
   "data": {
-    "id": "inf_cst_esc2",
-    "station_id": "st_cst",
-    "name": "Main Exit Escalator",
-    "type": "escalator",
-    "status": "warning",
-    "latitude": 18.9405,
-    "longitude": 72.8351,
-    "last_maintenance": "2026-05-15 10:00:00",
+    "id": "st_dadar",
+    "name": "Dadar Junction",
+    "city": "Mumbai",
+    "latitude": 19.0178,
+    "longitude": 72.8478,
     "created_at": "2026-05-01 00:00:00",
-    "station_name": "Chhatrapati Shivaji Maharaj Terminus (CSMT)",
+    "infrastructure": [
+      {
+        "id": "inf_dadar_esc5",
+        "station_id": "st_dadar",
+        "name": "Dadar Platform 6 Escalator South",
+        "type": "escalator",
+        "status": "critical",
+        "latitude": 19.0175,
+        "longitude": 72.8475,
+        "last_maintenance": "2026-04-01 09:00:00",
+        "created_at": "2026-05-01 00:00:00",
+        "score": 15,
+        "failure_probability": 0.85
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 2. Infrastructure API
+
+### Get All Assets
+- **Route**: `GET /api/infrastructure`
+- **Response**: `200 OK`
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "inf_dadar_esc5",
+      "station_id": "st_dadar",
+      "name": "Dadar Platform 6 Escalator South",
+      "type": "escalator",
+      "status": "critical",
+      "latitude": 19.0175,
+      "longitude": 72.8475,
+      "last_maintenance": "2026-04-01 09:00:00",
+      "created_at": "2026-05-01 00:00:00",
+      "station_name": "Dadar Junction",
+      "score": 15,
+      "failure_probability": 0.85,
+      "predicted_failure_time": "2026-06-10 12:00:00"
+    }
+  ]
+}
+```
+
+### Get Single Asset details
+- **Route**: `GET /api/infrastructure/:id`
+- **Response**: `200 OK`
+```json
+{
+  "success": true,
+  "data": {
+    "id": "inf_dadar_esc5",
+    "station_id": "st_dadar",
+    "name": "Dadar Platform 6 Escalator South",
+    "type": "escalator",
+    "status": "critical",
+    "latitude": 19.0175,
+    "longitude": 72.8475,
+    "last_maintenance": "2026-04-01 09:00:00",
+    "created_at": "2026-05-01 00:00:00",
+    "station_name": "Dadar Junction",
     "health": {
-      "id": "hs_cst_esc2",
-      "infrastructure_id": "inf_cst_esc2",
-      "score": 72,
-      "failure_probability": 0.28,
-      "predicted_failure_time": "2026-07-10 12:00:00",
+      "id": "hs_dadar_esc5",
+      "infrastructure_id": "inf_dadar_esc5",
+      "score": 15,
+      "failure_probability": 0.85,
+      "predicted_failure_time": "2026-06-10 12:00:00",
       "computed_at": "2026-06-10 00:00:00"
     },
-    "activeAlerts": [],
+    "activeAlerts": [
+      {
+        "id": "alt_1",
+        "infrastructure_id": "inf_dadar_esc5",
+        "title": "Critical Failure: Dadar Platform 6 Escalator South",
+        "message": "Escalator has shut down following multiple structural component alarms.",
+        "severity": "critical",
+        "resolved": 0,
+        "created_at": "2026-06-09 08:00:00"
+      }
+    ],
     "recentReports": [
       {
-        "id": "rep_1",
-        "infrastructure_id": "inf_cst_esc2",
+        "id": "rep_4",
+        "infrastructure_id": "inf_dadar_esc5",
         "user_id": "usr_1",
-        "description": "Escalator making screeching noises.",
-        "severity": "medium",
-        "confidence": 0.75,
-        "created_at": "2026-06-08 08:30:00",
+        "description": "Escalator has stopped completely.",
+        "severity": "high",
+        "confidence": 0.5,
+        "created_at": "2026-06-09 07:00:00",
         "user_name": "Rohan Sharma"
       }
     ]
@@ -78,87 +152,93 @@ This documentation outlines the endpoint definitions, payload schemas, and mock 
 
 ---
 
-## 2. Citizen Reports API
+## 3. Reports API (Zod Validated)
 
 ### Submit Issue Report
 - **Route**: `POST /api/reports`
-- **Payload Schema**:
+- **Headers**:
+  - `Authorization: Bearer <clerk_user_id_or_jwt>` (Required. Supports mock users like `usr_demo_1` or Clerk JWTs)
+- **Request Body Validation (Zod)**:
+  - `infrastructure_id` (string, min 1)
+  - `user_id` (string, min 1 - auto-filled from authorization token)
+  - `description` (string, min 5, max 500)
+  - `severity` ("low" | "medium" | "high")
+- **Payload Example**:
 ```json
 {
   "infrastructure_id": "inf_cst_esc2",
-  "user_id": "usr_demo_1",
   "description": "Loose metal bracket on top step. Tripping hazard.",
   "severity": "high"
 }
 ```
-- **Response Status**: `200 OK` (Queued)
-- **Response Format**:
+- **Response**: `200 OK` (Queued)
 ```json
 {
   "success": true,
-  "message": "Report received and queued for analysis",
+  "message": "Report received and dispatched to prediction engine",
   "data": {
-    "reportId": "rep_e782be1e-d4c3-487c-8809-548c8b417e29"
+    "reportId": "rep_945fe2ba-23ab-41c3-8809-548c8b417e12"
   }
 }
 ```
 
 ---
 
-## 3. Alerts API
+## 3b. Resolve Alerts API (Operator/Admin Authorized)
 
-### Get Active & Resolved Alerts
+### Resolve Alert & Reset Asset
+- **Route**: `POST /api/alerts/:id/resolve`
+- **Headers**:
+  - `Authorization: Bearer <clerk_operator_id_or_jwt>` (Required. Role of the user must be `operator` or `admin` in the database)
+- **Response**: `200 OK`
+```json
+{
+  "success": true,
+  "message": "Alert resolved, asset status reset to healthy"
+}
+```
+
+
+---
+
+## 4. Alerts API
+
+### Get Active Alerts
 - **Route**: `GET /api/alerts`
-- **Response Status**: `200 OK`
-- **Response Format**:
+- **Response**: `200 OK`
 ```json
 {
   "success": true,
   "data": [
     {
       "id": "alt_1",
-      "infrastructure_id": "inf_dadar_esc2",
-      "title": "Critical Failure: Platform 6 Escalator South",
+      "infrastructure_id": "inf_dadar_esc5",
+      "title": "Critical Failure: Dadar Platform 6 Escalator South",
       "message": "Escalator has shut down following multiple structural component alarms.",
       "severity": "critical",
       "resolved": 0,
       "created_at": "2026-06-09 08:00:00",
-      "asset_name": "Platform 6 Escalator South",
+      "asset_name": "Dadar Platform 6 Escalator South",
       "station_name": "Dadar Junction"
     }
   ]
 }
 ```
 
-### Resolve Active Alert
-- **Route**: `POST /api/alerts/:id/resolve`
-- **Response Status**: `200 OK`
-- **Response Format**:
-```json
-{
-  "success": true,
-  "message": "Alert resolved, asset restored to healthy status"
-}
-```
-
 ---
 
-## 4. Operator Dashboard API
+## 5. Dashboard Summary API (KV Cached)
 
-### Get Summary Statistics
 - **Route**: `GET /api/dashboard/summary`
-- **Headers**:
-  - `Cache-Control: public, max-age=300` (KV cached under the hood)
-- **Response Status**: `200 OK`
-- **Response Format**:
+- **Response**: `200 OK`
 ```json
 {
   "success": true,
   "data": {
-    "totalInfrastructure": 30,
-    "activeAlerts": 3,
+    "totalInfrastructure": 104,
+    "activeAlerts": 5,
     "criticalAssets": 3,
-    "averageReliability": 87
+    "averageReliability": 92
   },
   "cached": true
 }

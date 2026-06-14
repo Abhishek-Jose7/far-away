@@ -58,6 +58,12 @@ export interface Alert {
     created_at: string;
     asset_name?: string;
     station_name?: string;
+    failure_probability?: number;
+}
+export interface HealthTrendPoint {
+    day: string;
+    health: number;
+    incidents?: number;
 }
 export interface MaintenanceLog {
     id: string;

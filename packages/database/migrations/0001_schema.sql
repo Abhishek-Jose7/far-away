@@ -84,3 +84,16 @@ CREATE INDEX IF NOT EXISTS idx_health_scores_infrastructure_id ON health_scores(
 CREATE INDEX IF NOT EXISTS idx_alerts_resolved_severity ON alerts(resolved, severity);
 CREATE INDEX IF NOT EXISTS idx_alerts_infrastructure_id ON alerts(infrastructure_id);
 CREATE INDEX IF NOT EXISTS idx_maintenance_logs_infrastructure_id ON maintenance_logs(infrastructure_id);
+
+-- Infrastructure Status History (For trend lines / deterioration charts)
+CREATE TABLE IF NOT EXISTS infrastructure_status_history (
+  id TEXT PRIMARY KEY,
+  infrastructure_id TEXT NOT NULL REFERENCES infrastructure(id) ON DELETE CASCADE,
+  health_score INTEGER NOT NULL CHECK(health_score >= 0 AND health_score <= 100),
+  failure_probability REAL NOT NULL CHECK(failure_probability >= 0.0 AND failure_probability <= 1.0),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_status_history_infra_id ON infrastructure_status_history(infrastructure_id);
+CREATE INDEX IF NOT EXISTS idx_status_history_created_at ON infrastructure_status_history(created_at);
+

@@ -1,6 +1,8 @@
+'use strict';
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
+import dynamic from 'next/dynamic';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTransitStore } from '../lib/store';
 import { api } from '../lib/api';
@@ -18,19 +20,28 @@ import {
   ArrowRight,
   RefreshCw,
   Search,
-  Filter,
-  Layers,
-  SlidersHorizontal,
-  Info,
-  ChevronRight,
-  FileText,
-  ChevronLeft,
-  X,
-  Map,
-  CloudSun,
-  LayoutDashboard
+  Filter
 } from 'lucide-react';
-import { Infrastructure, Alert } from '@transit/types';
+import { Infrastructure, Alert } from '@transitiq/types';
+import {
+  computeAssetsAtRisk,
+  computeRiskDistribution,
+  computeTypeBreakdown,
+  sortAssetsByRisk,
+  getHealthBarColor,
+  getHealthTextColor,
+  getFailureProbabilityColor,
+  buildAssetHealthTrend,
+  InfrastructureWithHealth,
+} from '../lib/analytics';
+import { StatusBadge } from '../components/operator/StatusBadge';
+import { HealthTrendChart } from '../components/operator/HealthTrendChart';
+import { RiskDistributionChart } from '../components/operator/RiskDistributionChart';
+import { TypeBreakdownChart } from '../components/operator/TypeBreakdownChart';
+const TransitMap = dynamic(
+  () => import('../components/TransitMap').then((m) => m.TransitMap),
+  { ssr: false },
+);
 
 export default function Home() {
   const queryClient = useQueryClient();
@@ -46,27 +57,19 @@ export default function Home() {
     filterStatus,
     setFilterStatus,
     filterType,
-    setFilterType
+    setFilterType,
+    currentUser,
+    setCurrentUser
   } = useTransitStore();
-
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<any>(null);
-  const markerRefs = useRef<any[]>([]);
 
   // Local state for reporting modal / form
   const [isReporting, setIsReporting] = useState(false);
-  const [successMsg, setSuccessMsg] = useState('');
   const [reportForm, setReportForm] = useState({
     infrastructure_id: '',
     description: '',
     severity: 'medium'
   });
-
-  // Track map loading state to orchestrate marker updates
-  const [mapLoaded, setMapLoaded] = useState(false);
-
-  // Mobile navigation tabs
-  const [mobileTab, setMobileTab] = useState<'map' | 'alerts' | 'planner'>('map');
+  const [successMsg, setSuccessMsg] = useState('');
 
   // 1. Fetching Queries via TanStack Query
   const { data: infraResponse, isLoading: isInfraLoading, refetch: refetchInfra } = useQuery({
@@ -84,6 +87,12 @@ export default function Home() {
     queryFn: api.getDashboardSummary
   });
 
+  const { data: healthTrendResponse, isLoading: isHealthTrendLoading, refetch: refetchHealthTrend } = useQuery({
+    queryKey: ['healthTrend'],
+    queryFn: api.getHealthTrend,
+    enabled: viewMode === 'operator',
+  });
+
   const { data: selectedAssetDetails, refetch: refetchAssetDetails } = useQuery({
     queryKey: ['assetDetails', selectedAssetId],
     queryFn: () => selectedAssetId ? api.getAssetDetails(selectedAssetId) : null,
@@ -94,8 +103,9 @@ export default function Home() {
   const reportMutation = useMutation({
     mutationFn: api.submitReport,
     onSuccess: (data) => {
-      setSuccessMsg('Report submitted successfully!');
+      setSuccessMsg('Thank you! Your report has been submitted and queued for verification.');
       setReportForm({ infrastructure_id: '', description: '', severity: 'medium' });
+      // Invalidate queries to fetch updated data
       queryClient.invalidateQueries({ queryKey: ['infrastructure'] });
       queryClient.invalidateQueries({ queryKey: ['summary'] });
       if (selectedAssetId) {
@@ -104,7 +114,7 @@ export default function Home() {
       setTimeout(() => {
         setSuccessMsg('');
         setIsReporting(false);
-      }, 3000);
+      }, 4000);
     },
     onError: (err: any) => {
       alert(`Report Submission Failed: ${err.message}`);
@@ -126,6 +136,7 @@ export default function Home() {
     }
   });
 
+  // Extract assets and alerts array
   const assets: Infrastructure[] = infraResponse?.data || [];
   const activeAlerts: Alert[] = (alertsResponse?.data || []).filter((a: Alert) => a.resolved === 0);
   const summary = summaryResponse?.data || {
@@ -135,963 +146,765 @@ export default function Home() {
     averageReliability: 100
   };
 
+  const healthTrendData = healthTrendResponse?.data || [];
+  const riskDistribution = computeRiskDistribution(assets);
+  const typeBreakdown = computeTypeBreakdown(assets);
+  const assetsAtRisk = computeAssetsAtRisk(assets);
+  const sortedOperatorAssets = sortAssetsByRisk(assets as InfrastructureWithHealth[]);
+  const assetHealthTrend = buildAssetHealthTrend(selectedAssetDetails?.data?.history || []);
+
+  // Auto-set the first asset when none selected
   useEffect(() => {
     if (assets.length > 0 && !selectedAssetId) {
       setSelectedAssetId(assets[0].id);
     }
   }, [assets, selectedAssetId, setSelectedAssetId]);
 
+  // Derived Stations list for drop downs and map
   const stations = [
-    { id: 'st_cst', name: 'CSMT Hub', coords: [72.8358, 18.9398], address: 'Chhatrapati Shivaji Maharaj Terminus, Fort, Mumbai, 400001' },
-    { id: 'st_dadar', name: 'Dadar Junction', coords: [72.8422, 19.0178], address: 'Dadar East Station Rd, Dadar East, Mumbai, 400014' },
-    { id: 'st_andheri', name: 'Andheri Central', coords: [72.8479, 19.1197], address: 'Andheri Station West, Railway Colony, Mumbai, 400069' },
-    { id: 'st_kurla', name: 'Kurla Interchange', coords: [72.8893, 19.0650], address: 'Kurla West Station Rd, Brahmanwadi, Kurla, Mumbai, 400070' },
-    { id: 'st_ghatkopar', name: 'Ghatkopar Station', coords: [72.9084, 19.0860], address: 'Ghatkopar East Station Rd, Pant Nagar, Mumbai, 400075' },
-    { id: 'st_thane', name: 'Thane Terminus', coords: [72.9781, 19.2183], address: 'Thane West Railway Station Rd, Thane, Maharashtra, 400601' }
+    { id: 'st_cst', name: 'CSMT', lng: 72.8355, lat: 18.9402 },
+    { id: 'st_dadar', name: 'Dadar', lng: 72.8424, lat: 19.0180 },
+    { id: 'st_andheri', name: 'Andheri', lng: 72.8464, lat: 19.1197 },
+    { id: 'st_kurla', name: 'Kurla', lng: 72.8890, lat: 19.0728 },
+    { id: 'st_ghatkopar', name: 'Ghatkopar', lng: 72.9081, lat: 19.0856 },
+    { id: 'st_thane', name: 'Thane', lng: 72.9781, lat: 19.2183 },
   ];
 
+  // Map station status color
   const getStationStatusColor = (stationId: string) => {
     const stationAssets = assets.filter(a => a.station_id === stationId);
-    if (stationAssets.some(a => a.status === 'critical')) return 'bg-rose-500';
+    if (stationAssets.some(a => a.status === 'critical')) return 'bg-red-500';
     if (stationAssets.some(a => a.status === 'warning')) return 'bg-amber-500';
     return 'bg-emerald-500';
   };
 
+  // Filtered assets list
   const filteredAssets = assets.filter(asset => {
     const matchesSearch = asset.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           (asset.station_name || '').toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStation = selectedStationId ? asset.station_id === selectedStationId : true;
     const matchesStatus = filterStatus === 'all' ? true : asset.status === filterStatus;
     const matchesType = filterType === 'all' ? true : asset.type === filterType;
+
     return matchesSearch && matchesStation && matchesStatus && matchesType;
   });
 
   const currentAsset = assets.find(a => a.id === selectedAssetId);
-  const selectedStation = stations.find(s => s.id === selectedStationId);
-
-  // Initialize MapLibre GL - ONCE with robust concurrent-safe cleanup
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    let mapInstance: any = null;
-    let destroyed = false;
-
-    import('maplibre-gl').then((maplibregl) => {
-      if (destroyed) return;
-
-      // Ensure any orphaned instances are cleared to prevent detached canvas containers
-      if (mapRef.current) {
-        try {
-          mapRef.current.remove();
-        } catch (e) {
-          console.warn('Failed to remove old map instance', e);
-        }
-        mapRef.current = null;
-      }
-
-      const container = mapContainerRef.current;
-      if (!container) return;
-
-      mapInstance = new maplibregl.Map({
-        container: container,
-        style: {
-          version: 8,
-          sources: {
-            'raster-tiles': {
-              type: 'raster',
-              tiles: [
-                'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-              ],
-              tileSize: 256,
-              attribution: '© OpenStreetMap contributors'
-            }
-          },
-          layers: [
-            {
-              id: 'osm-tiles',
-              type: 'raster',
-              source: 'raster-tiles',
-              minzoom: 0,
-              maxzoom: 19
-            }
-          ]
-        },
-        center: [72.887, 19.076],
-        zoom: 10.3,
-        attributionControl: false
-      });
-
-      mapRef.current = mapInstance;
-
-      mapInstance.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
-
-      // Draw route layers on map load
-      mapInstance.on('load', () => {
-        if (destroyed) return;
-
-        const redLineCoords = stations.map(s => s.coords);
-        const blueLineCoords = [
-          stations[2].coords, // Andheri
-          stations[3].coords, // Kurla
-          stations[4].coords  // Ghatkopar
-        ];
-
-        mapInstance.addSource('red-line', {
-          type: 'geojson',
-          data: {
-            type: 'Feature',
-            geometry: {
-              type: 'LineString',
-              coordinates: redLineCoords
-            }
-          }
-        });
-
-        mapInstance.addSource('blue-line', {
-          type: 'geojson',
-          data: {
-            type: 'Feature',
-            geometry: {
-              type: 'LineString',
-              coordinates: blueLineCoords
-            }
-          }
-        });
-
-        // Add visual casing under orange routes for premium navigation appearance
-        mapInstance.addLayer({
-          id: 'red-line-bg',
-          type: 'line',
-          source: 'red-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ffffff',
-            'line-width': 6.5
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'red-line-glow',
-          type: 'line',
-          source: 'red-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ff6b00',
-            'line-width': 8,
-            'line-opacity': 0.2
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'red-line-main',
-          type: 'line',
-          source: 'red-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ff6b00',
-            'line-width': 3.5
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'blue-line-bg',
-          type: 'line',
-          source: 'blue-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ffffff',
-            'line-width': 6.5
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'blue-line-glow',
-          type: 'line',
-          source: 'blue-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ea580c',
-            'line-width': 8,
-            'line-opacity': 0.2
-          }
-        });
-
-        mapInstance.addLayer({
-          id: 'blue-line-main',
-          type: 'line',
-          source: 'blue-line',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#ea580c',
-            'line-width': 3.5
-          }
-        });
-
-        setMapLoaded(true);
-      });
-    });
-
-    return () => {
-      destroyed = true;
-      if (mapInstance) {
-        try {
-          mapInstance.remove();
-        } catch (e) {
-          console.warn('Failed to remove map instance on cleanup', e);
-        }
-      }
-      mapRef.current = null;
-      setMapLoaded(false);
-    };
-  }, []); // Run ONCE
-
-  // Update markers when assets load or when selected hub changes
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapLoaded) return;
-
-    let destroyed = false;
-
-    import('maplibre-gl').then((maplibregl) => {
-      if (destroyed) return;
-
-      // Clear existing markers
-      markerRefs.current.forEach(m => m.remove());
-      markerRefs.current = [];
-
-      stations.forEach((st) => {
-        const el = document.createElement('div');
-        el.className = 'custom-maplibre-marker';
-        el.style.cursor = 'pointer';
-
-        const isSelected = selectedStationId === st.id;
-        const statusColor = getStationStatusColor(st.id);
-
-        let markerColorClass = 'bg-emerald-500';
-        let glowClass = 'glow-healthy';
-        if (statusColor === 'bg-rose-500') {
-          markerColorClass = 'bg-rose-500';
-          glowClass = 'glow-critical';
-        } else if (statusColor === 'bg-amber-500') {
-          markerColorClass = 'bg-amber-500';
-          glowClass = 'glow-warning';
-        }
-
-        if (isSelected) {
-          // Selected marker: black center, white border, pulsing orange concentric rings
-          el.innerHTML = `
-            <div class="relative flex flex-col items-center justify-center">
-              <span class="absolute inline-flex h-10 w-10 rounded-full bg-orange-500/20 animate-ring-pulse"></span>
-              <span class="absolute inline-flex h-7 w-7 rounded-full bg-orange-500/35"></span>
-              <div class="h-6 w-6 rounded-full border-4 border-white bg-slate-900 shadow-xl z-10 flex items-center justify-center">
-                <div class="h-2 w-2 rounded-full bg-white animate-pulse"></div>
-              </div>
-            </div>
-          `;
-        } else {
-          // Regular marker: orange/status colored pin
-          el.innerHTML = `
-            <div class="relative flex flex-col items-center">
-              <span class="absolute inline-flex h-7 w-7 rounded-full opacity-35 animate-ring-pulse ${markerColorClass} ${glowClass}"></span>
-              <div class="h-4.5 w-4.5 rounded-full border-2 border-white shadow-lg ${markerColorClass} ${glowClass}"></div>
-            </div>
-          `;
-        }
-
-        el.addEventListener('click', (e) => {
-          e.stopPropagation();
-          setSelectedStationId(st.id);
-          const stationAssets = assets.filter(a => a.station_id === st.id);
-          if (stationAssets.length > 0) {
-            setSelectedAssetId(stationAssets[0].id);
-          }
-        });
-
-        const marker = new maplibregl.Marker({ element: el })
-          .setLngLat(st.coords as [number, number])
-          .addTo(map);
-
-        markerRefs.current.push(marker);
-      });
-    });
-
-    return () => {
-      destroyed = true;
-    };
-  }, [assets, selectedStationId, mapLoaded]);
-
-  // Resize map when sidebars open/close or view modes toggle to prevent canvas clipping
-  useEffect(() => {
-    if (mapRef.current) {
-      const timer = setTimeout(() => {
-        mapRef.current.resize();
-      }, 150);
-      return () => clearTimeout(timer);
-    }
-  }, [selectedAssetId, viewMode]);
-
-  const recenterMap = () => {
-    if (mapRef.current) {
-      mapRef.current.easeTo({
-        center: [72.887, 19.076],
-        zoom: 10.3,
-        duration: 1000
-      });
-    }
-  };
 
   const handleReportSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!reportForm.infrastructure_id || !reportForm.description) {
-      alert('Please fill out all fields.');
+      alert('Please select an asset and write a description.');
       return;
     }
     reportMutation.mutate({
       infrastructure_id: reportForm.infrastructure_id,
-      user_id: 'usr_demo_1',
+      user_id: currentUser, // Dynamic active user ID from store
       description: reportForm.description,
       severity: reportForm.severity
     });
   };
 
   return (
-    <div className="flex flex-col min-h-screen text-slate-800 bg-slate-100/50 relative overflow-hidden select-none">
-      
-      {/* Floating Header on Desktop */}
-      <header className="hidden md:flex glass-panel sticky top-4 left-4 right-4 z-30 mx-4 mt-4 px-6 py-4 items-center justify-between border border-slate-200/50 rounded-3xl shadow-lg backdrop-blur-md">
+    <div className={`flex flex-col ${viewMode === 'operator' ? 'h-screen overflow-hidden' : 'min-h-screen'}`}>
+      {/* Premium Header */}
+      <header className={`glass-panel z-40 w-full px-6 py-4 flex items-center justify-between border-b border-slate-800 ${viewMode === 'operator' ? 'shrink-0' : 'sticky top-0'}`}>
         <div className="flex items-center gap-3">
-          <div className="bg-gradient-to-tr from-orange-500 to-amber-500 p-2.5 rounded-2xl text-white shadow-md shadow-orange-500/25 ring-1 ring-white/20">
-            <Activity className="h-5.5 w-5.5 animate-pulse text-white" />
+          <div className="bg-gradient-to-tr from-violet-600 to-indigo-500 p-2 rounded-xl text-white shadow-lg shadow-violet-500/20">
+            <Activity className="h-6 w-6 animate-pulse" />
           </div>
           <div>
-            <h1 className="text-base font-extrabold tracking-tight text-slate-900 flex items-center gap-2">
-              Transit Infra Intelligence
-              <span className="text-[9px] bg-orange-500/10 text-orange-600 border border-orange-500/20 px-2 py-0.5 rounded-full font-mono font-bold tracking-wider">V1.0</span>
+            <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
+              Transit Infrastructure Intelligence
             </h1>
-            <p className="text-[9px] text-orange-600 font-mono tracking-widest uppercase mt-0.5">
-              Predictive Monitoring Control Center
+            <p className="text-[10px] text-violet-400 font-mono tracking-widest uppercase">
+              Predictive Monitoring Platform
             </p>
           </div>
         </div>
 
-        {/* View Switcher and Actions */}
+        {/* View Switcher and Demo Actions */}
         <div className="flex items-center gap-4">
-          <div className="flex items-center bg-slate-100 border border-slate-200/60 rounded-2xl p-1 shadow-inner backdrop-blur-md">
+          <div className="flex items-center bg-slate-900 border border-slate-800 rounded-lg p-1">
             <button
-              onClick={() => setViewMode('commuter')}
-              className={`px-5 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
+              onClick={() => {
+                setViewMode('commuter');
+                setCurrentUser('usr_1'); // Switch to commuter Rohan Sharma
+              }}
+              className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${
                 viewMode === 'commuter'
-                  ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
-                  : 'text-slate-500 hover:text-slate-800'
+                  ? 'bg-violet-600 text-white shadow-md'
+                  : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Commuter Portal
+              Commuter App
             </button>
             <button
-              onClick={() => setViewMode('operator')}
-              className={`px-5 py-2 rounded-xl text-xs font-bold tracking-wide transition-all ${
+              onClick={() => {
+                setViewMode('operator');
+                setCurrentUser('usr_3'); // Switch to operator Vikram Singh
+              }}
+              className={`px-4 py-1.5 rounded-md text-xs font-semibold transition-all ${
                 viewMode === 'operator'
-                  ? 'bg-orange-500 text-white shadow-md shadow-orange-500/20'
-                  : 'text-slate-500 hover:text-slate-800'
+                  ? 'bg-violet-600 text-white shadow-md'
+                  : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Operator Control Desk
+              Operator Dashboard
             </button>
           </div>
 
           <button 
-            onClick={() => { refetchInfra(); refetchAlerts(); refetchSummary(); }}
-            className="p-2.5 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-slate-600 hover:text-slate-900 transition-all shadow-sm active:scale-95"
-            title="Refresh Telemetry"
+            onClick={() => { refetchInfra(); refetchAlerts(); refetchSummary(); refetchHealthTrend(); }}
+            className="p-2 bg-slate-950 border border-slate-800 hover:border-slate-700 rounded-lg text-slate-400 hover:text-white transition-all"
+            title="Force refresh backend data"
           >
-            <RefreshCw className="h-4.5 w-4.5" />
+            <RefreshCw className="h-4 w-4" />
           </button>
 
-          {/* User profile */}
-          <div className="flex items-center gap-2.5 border-l border-slate-200 pl-4">
-            <div className="bg-white h-9 w-9 rounded-full flex items-center justify-center border border-slate-200 text-slate-700 shadow-sm">
-              <UserIcon className="h-4.5 w-4.5 text-orange-500" />
+          {/* User Profile Selector Dropdown */}
+          <div className="flex items-center gap-2 border-l border-slate-800 pl-4">
+            <div className="bg-slate-800 h-8 w-8 rounded-full flex items-center justify-center border border-slate-700 text-slate-300 hidden sm:flex">
+              <UserIcon className="h-4 w-4" />
             </div>
-            <span className="text-xs text-slate-600 font-mono bg-slate-100 px-2.5 py-1 rounded-xl border border-slate-200">usr_demo_1</span>
+            <div className="flex flex-col">
+              <span className="text-[9px] text-slate-500 uppercase font-mono tracking-wider">Active Profile</span>
+              <select
+                value={currentUser}
+                onChange={(e) => setCurrentUser(e.target.value)}
+                className="bg-transparent border-0 text-xs text-slate-300 font-semibold focus:ring-0 focus:outline-none p-0 cursor-pointer hover:text-violet-400 transition-colors"
+              >
+                <option value="usr_1" className="bg-slate-950 text-slate-300">Rohan Sharma (Commuter)</option>
+                <option value="usr_2" className="bg-slate-950 text-slate-300">Priya Patel (Commuter)</option>
+                <option value="usr_3" className="bg-slate-950 text-slate-300">Vikram Singh (Operator)</option>
+                <option value="usr_4" className="bg-slate-950 text-slate-300">Anjali Desai (Admin)</option>
+                <option value="usr_5" className="bg-slate-950 text-slate-300">Abhishek Patil (Operator)</option>
+              </select>
+            </div>
           </div>
         </div>
       </header>
 
-      {/* Floating Header on Mobile (Swyft style) */}
-      <div className="flex md:hidden absolute top-4 left-4 right-4 z-30 justify-between items-center px-2 pointer-events-none">
-        {/* Back button */}
-        <button
-          onClick={() => {
-            setSelectedStationId(null);
-            setSelectedAssetId(null);
-            setIsReporting(false);
-          }}
-          className="h-11 w-11 rounded-full bg-white/95 border border-slate-200/80 shadow-lg flex items-center justify-center text-slate-800 pointer-events-auto active:scale-90 transition-all"
-        >
-          <ChevronLeft className="h-6 w-6 text-slate-800" />
-        </button>
-
-        {/* Brand logo in center */}
-        <div className="bg-white/95 border border-slate-200/80 px-5 py-2.5 rounded-2xl shadow-lg backdrop-blur-md flex items-center gap-2 pointer-events-auto">
-          <span className="h-2 w-2 rounded-full bg-orange-500 animate-pulse glow-healthy" />
-          <span className="text-sm font-extrabold tracking-wider text-orange-500 font-sans">swyft</span>
-        </div>
-
-        {/* Locate button */}
-        <button
-          onClick={recenterMap}
-          className="h-11 w-11 rounded-full bg-gradient-to-tr from-orange-500 to-amber-500 flex items-center justify-center border border-orange-400/20 shadow-lg text-white pointer-events-auto active:scale-90 transition-all shadow-orange-500/20"
-        >
-          <Compass className="h-5.5 w-5.5 animate-spin-slow" />
-        </button>
-      </div>
-
-      {/* Main Section */}
-      <main className="flex-1 w-full max-w-[1400px] mx-auto px-4 md:px-6 pb-6 mt-4 z-10 relative flex flex-col md:flex-row gap-6 items-stretch justify-between pointer-events-none h-[calc(100vh-140px)]">
+      {/* Main Layout Container */}
+      <main className={`flex-1 w-full max-w-7xl mx-auto p-4 md:p-6 grid grid-cols-1 gap-6 ${viewMode === 'operator' ? 'min-h-0 overflow-y-auto' : ''}`}>
         
-        {/* Desktop Left Sidebar Panel */}
-        {viewMode === 'commuter' ? (
-          <div className="hidden md:flex w-96 flex-col gap-4 glass-panel rounded-3xl p-5 shadow-xl border border-slate-200/50 pointer-events-auto h-full md:h-auto overflow-y-auto shrink-0">
-            <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-              <Search className="h-4.5 w-4.5 text-orange-500" />
-              <input
-                type="text"
-                placeholder="Search assets or stations..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-transparent border-none outline-none text-xs text-slate-800 placeholder-slate-400 w-full font-medium"
-              />
-            </div>
-
-            {/* Advanced Filters */}
-            <div className="grid grid-cols-2 gap-2 pb-2 border-b border-slate-100">
-              <select
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value as any)}
-                className="bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-[10px] text-slate-700 font-semibold focus:border-orange-500 outline-none"
-              >
-                <option value="all">All Statuses</option>
-                <option value="healthy">Healthy</option>
-                <option value="warning">Warning</option>
-                <option value="critical">Critical</option>
-              </select>
-              <select
-                value={filterType}
-                onChange={(e) => setFilterType(e.target.value)}
-                className="bg-white border border-slate-200 rounded-xl px-2.5 py-1.5 text-[10px] text-slate-700 font-semibold focus:border-orange-500 outline-none"
-              >
-                <option value="all">All Types</option>
-                <option value="escalator">Escalators</option>
-                <option value="elevator">Elevators</option>
-                <option value="bus_stop">Bus Stops</option>
-                <option value="charger">EV Chargers</option>
-                <option value="footbridge">Footbridges</option>
-              </select>
-            </div>
-
-            {/* Station select */}
-            <div className="flex flex-col gap-2">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest pl-1">Transit Hubs</span>
-              <div className="grid grid-cols-2 gap-2">
-                {stations.map(st => (
-                  <button
-                    key={st.id}
-                    onClick={() => setSelectedStationId(selectedStationId === st.id ? null : st.id)}
-                    className={`px-3 py-2 rounded-xl text-[10px] font-bold border transition-all text-left truncate ${
-                      selectedStationId === st.id 
-                        ? 'bg-orange-500 text-white border-orange-400 shadow-sm' 
-                        : 'bg-white border-slate-200 hover:border-slate-300 text-slate-700 shadow-sm'
-                    }`}
-                  >
-                    {st.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Node pool listing */}
-            <div className="flex flex-col gap-2.5 mt-2">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest pl-1">Nodes & Telemetry ({filteredAssets.length})</span>
-              <div className="flex flex-col gap-2 max-h-[300px] overflow-y-auto pr-1">
-                {isInfraLoading ? (
-                  <span className="text-xs text-slate-500 italic py-4 text-center">Querying node pools...</span>
-                ) : filteredAssets.length === 0 ? (
-                  <span className="text-xs text-slate-500 italic py-4 text-center">No matching assets found.</span>
-                ) : (
-                  filteredAssets.map(a => (
-                    <button
-                      key={a.id}
-                      onClick={() => setSelectedAssetId(a.id)}
-                      className={`flex items-center justify-between p-3 rounded-2xl border text-left transition-all ${
-                        selectedAssetId === a.id 
-                          ? 'bg-orange-55 border-orange-300 text-orange-950 font-semibold shadow-sm' 
-                          : 'bg-white border-slate-100 hover:border-slate-200 text-slate-700 shadow-sm'
-                      }`}
-                    >
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-[11px] font-semibold">{a.name}</span>
-                        <span className="text-[8px] text-slate-500 capitalize">{a.type.replace('_', ' ')} · {a.station_name}</span>
-                      </div>
-                      <span className={`text-[8.5px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${
-                        a.status === 'healthy' ? 'bg-emerald-55 text-emerald-700 border-emerald-200' :
-                        a.status === 'warning' ? 'bg-amber-55 text-amber-700 border-amber-200' :
-                        'bg-rose-55 text-rose-700 border-rose-200'
-                      }`}>
-                        {a.status}
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="hidden md:flex w-96 flex-col gap-4 glass-panel rounded-3xl p-5 shadow-xl border border-slate-200/50 pointer-events-auto h-full md:h-auto overflow-y-auto shrink-0">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <div>
-                <h3 className="text-xs font-extrabold uppercase tracking-widest text-slate-850">Dispatch Alert Logs</h3>
-                <p className="text-[9px] text-slate-400 font-mono mt-0.5">Active triggers</p>
-              </div>
-              <span className="text-[9px] font-mono text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">
-                {activeAlerts.length} Alerts
-              </span>
-            </div>
-
-            <div className="flex flex-col gap-3 max-h-[500px] overflow-y-auto pr-1">
-              {activeAlerts.length === 0 ? (
-                <div className="text-center py-12 bg-slate-55 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center gap-2">
-                  <CheckCircle className="h-8 w-8 text-emerald-500" />
-                  <span className="text-xs text-slate-500 font-bold">Nominal operations.</span>
-                </div>
-              ) : (
-                activeAlerts.map(alert => (
-                  <div 
-                    key={alert.id} 
-                    className={`p-3.5 rounded-2xl border flex flex-col gap-2.5 bg-white shadow-sm ${alert.severity === 'critical' ? 'border-rose-300' : 'border-amber-300'}`}
-                  >
-                    <div className="flex justify-between items-start gap-2">
-                      <div>
-                        <span className={`px-2 py-0.5 rounded text-[8px] font-bold uppercase mr-1 border ${
-                          alert.severity === 'critical' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'
-                        }`}>
-                          {alert.severity}
-                        </span>
-                        <span className="text-[9px] text-slate-400 font-mono">{new Date(alert.created_at).toLocaleTimeString()}</span>
-                      </div>
-                      <button
-                        onClick={() => resolveAlertMutation.mutate(alert.id)}
-                        className="bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 text-[9.5px] font-bold px-2 py-0.5 rounded-lg active:scale-95 transition-all"
-                      >
-                        Resolve
-                      </button>
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <h4 className="text-xs font-bold text-slate-800">{alert.title}</h4>
-                      <span className="text-[8.5px] text-slate-500 font-mono">{alert.asset_name} · {alert.station_name}</span>
-                      <p className="text-xs text-slate-600 mt-1 leading-relaxed">{alert.message}</p>
-                    </div>
+        {/* COMMUTER VIEW */}
+        {viewMode === 'commuter' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Left Column - Map and Quick Filters (8/12 grid) */}
+            <div className="lg:col-span-8 flex flex-col gap-6">
+              
+              {/* Map Panel */}
+              <div className="glass-panel rounded-2xl p-4 flex flex-col gap-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Compass className="h-4 w-4 text-violet-400" />
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                      Mumbai Transit Network Map
+                    </h2>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Unified Map Container (Renders in center-right empty space on desktop, absolute backdrop on mobile) */}
-        <div 
-          ref={mapContainerRef} 
-          className="absolute md:relative inset-0 md:inset-auto z-0 md:z-10 flex-1 w-full h-full md:h-auto md:rounded-[32px] overflow-hidden border-0 md:border md:border-slate-200/80 md:shadow-md pointer-events-auto bg-slate-50"
-        />
-
-        {/* Desktop Right Details/Dispatch Panel */}
-        {viewMode === 'commuter' ? (
-          currentAsset && (
-            <div className="hidden md:flex w-[380px] flex-col gap-4 glass-panel rounded-3xl p-5 shadow-xl border border-slate-200/50 pointer-events-auto h-full md:h-auto overflow-y-auto shrink-0 animate-fade-in">
-              <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-                <div>
-                  <span className="text-[9px] text-orange-600 font-bold uppercase tracking-widest block">Node Profile</span>
-                  <h2 className="text-sm font-extrabold text-slate-900 mt-0.5">{currentAsset.name}</h2>
-                  <p className="text-[10px] text-slate-500 flex items-center gap-1 mt-1 font-medium">
-                    <MapPin className="h-3.5 w-3.5 text-slate-400" />
-                    {currentAsset.station_name}
-                  </p>
-                </div>
-                <span className={`px-2.5 py-0.5 rounded-lg text-[9px] font-bold uppercase border ${
-                  currentAsset.status === 'healthy' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                  currentAsset.status === 'warning' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                  'bg-rose-50 text-rose-700 border-rose-200'
-                }`}>
-                  {currentAsset.status}
-                </span>
-              </div>
-
-              {/* Score indicators */}
-              <div className="bg-slate-50 border border-slate-200/60 rounded-2xl p-4 flex items-center justify-between shadow-sm">
-                <div className="flex flex-col gap-1">
-                  <span className="text-xs font-bold text-slate-800">Uptime Score</span>
-                  <span className="text-[10px] text-slate-500 leading-relaxed block max-w-[180px]">
-                    Historical operational accuracy rating.
+                  <span className="text-[10px] font-mono text-slate-500">
+                    Click a station to filter assets
                   </span>
                 </div>
-                <div className="relative h-16 w-16 flex items-center justify-center">
-                  <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                    <path className="text-slate-200" strokeWidth="3.5" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                    <path className="text-orange-550" strokeDasharray={`${(currentAsset as any).score || 100}, 100`} strokeWidth="3.5" strokeLinecap="round" stroke="currentColor" fill="none" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-                  </svg>
-                  <span className="absolute text-xs font-mono font-bold text-slate-800">{(currentAsset as any).score || 100}%</span>
-                </div>
-              </div>
 
-              {/* Predict warnings */}
-              {(currentAsset as any).predicted_failure_time && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl flex items-center gap-3">
-                  <Clock className="h-5 w-5 text-rose-500" />
-                  <div>
-                    <span className="text-[9px] text-rose-600 font-bold block uppercase tracking-wider">Predictive Incident Warning</span>
-                    <span className="text-[11px] text-rose-900 font-medium">Outage likely inside 48 hours.</span>
+                {/* MapLibre Map Container */}
+                <div className="relative w-full h-[400px] bg-slate-900/60 rounded-xl border border-slate-800 overflow-hidden">
+                  <TransitMap
+                    stations={stations}
+                    selectedStationId={selectedStationId}
+                    onStationClick={(stationId) =>
+                      setSelectedStationId(selectedStationId === stationId ? null : stationId)
+                    }
+                    getStationStatusColor={getStationStatusColor}
+                  />
+
+                  {/* Floating Map Info */}
+                  <div className="absolute bottom-3 right-3 z-10 bg-slate-950/90 border border-slate-800 rounded-lg p-2.5 flex flex-col gap-1.5 text-[10px] font-mono text-slate-400 pointer-events-none">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                      <span>All Infrastructure Healthy</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-amber-500" />
+                      <span>Warning (Downtime/Slowing)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-red-500" />
+                      <span>Critical (Shutdown/Outage)</span>
+                    </div>
                   </div>
                 </div>
-              )}
 
-              {/* Maintenance log */}
-              <div className="flex flex-col gap-2">
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block pl-1">Overhaul timeline</span>
-                <div className="flex items-center justify-between text-xs font-mono bg-slate-50 border border-slate-200/60 p-3 rounded-xl">
-                  <span className="text-slate-500">Last Service Date:</span>
-                  <span className="text-slate-800 font-semibold">{new Date(currentAsset.last_maintenance).toLocaleDateString()}</span>
+                {/* Quick Filters */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-semibold uppercase block mb-1">Asset Status</label>
+                    <select
+                      value={filterStatus}
+                      onChange={(e) => setFilterStatus(e.target.value as any)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300"
+                    >
+                      <option value="all">All Statuses</option>
+                      <option value="healthy">Healthy Only</option>
+                      <option value="warning">Warning Only</option>
+                      <option value="critical">Critical Only</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-semibold uppercase block mb-1">Asset Type</label>
+                    <select
+                      value={filterType}
+                      onChange={(e) => setFilterType(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300"
+                    >
+                      <option value="all">All Types</option>
+                      <option value="escalator">Escalators</option>
+                      <option value="elevator">Elevators</option>
+                      <option value="bus_stop">Bus Stops</option>
+                      <option value="charger">EV Chargers</option>
+                      <option value="footbridge">Footbridges</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-semibold uppercase block mb-1">Station Filter</label>
+                    <select
+                      value={selectedStationId || ''}
+                      onChange={(e) => setSelectedStationId(e.target.value || null)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300"
+                    >
+                      <option value="">All Stations</option>
+                      <option value="st_cst">CSMT</option>
+                      <option value="st_dadar">Dadar</option>
+                      <option value="st_andheri">Andheri</option>
+                      <option value="st_kurla">Kurla</option>
+                      <option value="st_ghatkopar">Ghatkopar</option>
+                      <option value="st_thane">Thane</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={() => { setSelectedStationId(null); setFilterStatus('all'); setFilterType('all'); setSearchQuery(''); }}
+                      className="w-full bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-white px-3 py-1.5 rounded-lg text-xs transition-all"
+                    >
+                      Reset All Filters
+                    </button>
+                  </div>
                 </div>
+
               </div>
 
-              {/* Commuter Feed list */}
-              <div className="flex flex-col gap-2.5">
-                <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block pl-1">Commuter alerts log</span>
-                <div className="flex flex-col gap-2 max-h-[140px] overflow-y-auto pr-1">
-                  {selectedAssetDetails?.data?.recentReports?.length === 0 ? (
-                    <span className="text-xs text-slate-500 italic py-3 text-center bg-slate-50 border border-slate-200/40 rounded-xl">No active reports filed.</span>
+              {/* Assets List */}
+              <div className="glass-panel rounded-2xl p-4 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
+                    Infrastructure Assets ({filteredAssets.length})
+                  </h3>
+                  <div className="relative max-w-xs w-full">
+                    <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 h-3.5 w-3.5 text-slate-500" />
+                    <input
+                      type="text"
+                      placeholder="Search assets..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-3 py-1 text-xs text-slate-300 w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[300px] overflow-y-auto pr-1">
+                  {isInfraLoading ? (
+                    <div className="col-span-2 text-center py-8 text-xs text-slate-500">Loading infrastructure list...</div>
+                  ) : filteredAssets.length === 0 ? (
+                    <div className="col-span-2 text-center py-8 text-xs text-slate-500">No assets match your search parameters.</div>
                   ) : (
-                    (selectedAssetDetails?.data?.recentReports || []).map((rep: any) => (
-                      <div key={rep.id} className="bg-white border border-slate-200 p-3 rounded-xl flex flex-col gap-1 shadow-sm">
-                        <div className="flex justify-between items-center text-[10px]">
-                          <span className="text-orange-600 font-bold">{rep.user_name || ' commuter_0'}</span>
-                          <span className="text-[8px] font-mono text-slate-400 uppercase font-bold bg-slate-100 px-1.5 py-0.5 rounded">{rep.severity}</span>
+                    filteredAssets.map((asset) => (
+                      <button
+                        key={asset.id}
+                        onClick={() => setSelectedAssetId(asset.id)}
+                        className={`flex items-center justify-between p-3 rounded-xl transition-all text-left ${
+                          selectedAssetId === asset.id
+                            ? 'bg-violet-950/40 border border-violet-600 shadow-md'
+                            : 'bg-slate-900/50 hover:bg-slate-900 border border-slate-800'
+                        }`}
+                      >
+                        <div className="flex flex-col gap-1">
+                          <span className="text-xs font-semibold text-slate-200">{asset.name}</span>
+                          <span className="text-[10px] text-slate-500 uppercase tracking-wider font-mono">
+                            {asset.station_name} • {asset.type.replace('_', ' ')}
+                          </span>
                         </div>
-                        <p className="text-xs text-slate-700">{rep.description}</p>
-                      </div>
+                        <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
+                          asset.status === 'healthy' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                          asset.status === 'warning' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                          'bg-red-500/10 text-red-400 border border-red-500/20 animate-pulse'
+                        }`}>
+                          {asset.status}
+                        </span>
+                      </button>
                     ))
                   )}
                 </div>
               </div>
 
-              {/* Actions forms */}
-              <div className="border-t border-slate-100 pt-4">
-                {isReporting ? (
-                  <form onSubmit={handleReportSubmit} className="bg-white border border-slate-200 shadow-md p-4 rounded-2xl flex flex-col gap-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-slate-700 uppercase">Submit Telemetry Report</span>
-                      <button type="button" onClick={() => setIsReporting(false)} className="text-[10px] text-slate-400 hover:text-slate-600">Cancel</button>
+            </div>
+
+            {/* Right Column - Detail Card & Reporting (4/12 grid) */}
+            <div className="lg:col-span-4 flex flex-col gap-6">
+              
+              {/* Asset Detail Card */}
+              {currentAsset && (
+                <div className="glass-panel rounded-2xl p-6 flex flex-col gap-6 sticky top-24">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <span className="text-[10px] text-violet-400 font-semibold uppercase tracking-wider block">
+                        Asset Profile Details
+                      </span>
+                      <h2 className="text-lg font-bold text-slate-200">{currentAsset.name}</h2>
+                      <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                        <MapPin className="h-3.5 w-3.5 text-slate-500" />
+                        {currentAsset.station_name} Station
+                      </p>
                     </div>
+
+                    <span className={`px-2.5 py-1 rounded-md text-[10px] font-extrabold uppercase ${
+                      currentAsset.status === 'healthy' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                      currentAsset.status === 'warning' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+                      'bg-red-500/20 text-red-400 border border-red-500/30 glow-critical'
+                    }`}>
+                      {currentAsset.status}
+                    </span>
+                  </div>
+
+                  {/* Circular Reliability Score Gauge */}
+                  <div className="bg-slate-900/60 rounded-xl p-4 flex items-center justify-between border border-slate-800">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-slate-300">Reliability Index</span>
+                      <span className="text-[10px] text-slate-500 block max-w-[140px] mt-0.5">
+                        Calculated from reports, user feedback, and maintenance intervals.
+                      </span>
+                    </div>
+
+                    {/* Circular Score representation */}
+                    <div className="relative h-20 w-20 flex items-center justify-center">
+                      <svg className="w-full h-full transform -rotate-95" viewBox="0 0 36 36">
+                        <path
+                          className="text-slate-800"
+                          strokeWidth="3.5"
+                          stroke="currentColor"
+                          fill="none"
+                          d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        />
+                        <path
+                          className={`${
+                            (currentAsset as any).score >= 80 ? 'text-emerald-500' :
+                            (currentAsset as any).score >= 50 ? 'text-amber-500' :
+                            'text-red-500'
+                          }`}
+                          strokeDasharray={`${(currentAsset as any).score || 100}, 100`}
+                          strokeWidth="3.5"
+                          strokeLinecap="round"
+                          stroke="currentColor"
+                          fill="none"
+                          d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                        />
+                      </svg>
+                      <div className="absolute text-center">
+                        <span className="text-base font-extrabold tracking-tight">
+                          {(currentAsset as any).score !== undefined ? (currentAsset as any).score : 100}
+                        </span>
+                        <span className="text-[10px] text-slate-500 block -mt-1">%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Prediction Window */}
+                  {(currentAsset as any).predicted_failure_time && (
+                    <div className="p-3 bg-red-500/5 border border-red-500/10 rounded-xl flex items-center gap-3">
+                      <Clock className="h-5 w-5 text-red-400" />
+                      <div>
+                        <span className="text-[10px] text-red-400 font-semibold block uppercase">Failure Probability Warning</span>
+                        <span className="text-xs text-slate-300 font-semibold">
+                          Expected failure window within 48-72 hours.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Per-asset health trend */}
+                  {assetHealthTrend.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                        Health Trend
+                      </span>
+                      <HealthTrendChart data={assetHealthTrend} compact />
+                    </div>
+                  )}
+
+                  {/* Maintenance Log */}
+                  <div className="flex flex-col gap-2">
+                    <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                      Asset History
+                    </span>
+                    <div className="flex items-center justify-between text-xs font-mono bg-slate-900/40 p-2.5 rounded-lg border border-slate-800/60">
+                      <span className="text-slate-400">Last Maintenance:</span>
+                      <span className="text-slate-300">{new Date(currentAsset.last_maintenance).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+
+                  {/* Citizens report stream */}
+                  <div className="flex flex-col gap-3">
+                    <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block">
+                      Recent Commuter Feedback
+                    </span>
                     
-                    <div>
-                      <label className="text-[8px] text-slate-400 block mb-1">Issue Severity</label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {['low', 'medium', 'high'].map(s => (
-                          <button
-                            key={s}
-                            type="button"
-                            onClick={() => setReportForm({ ...reportForm, severity: s })}
-                            className={`py-1 rounded-lg text-xs transition-all ${reportForm.severity === s ? 'bg-orange-500 text-white font-bold shadow-sm' : 'bg-slate-50 text-slate-600 border border-slate-200'}`}
+                    <div className="flex flex-col gap-2 max-h-[140px] overflow-y-auto pr-1">
+                      {selectedAssetDetails?.data?.recentReports?.length === 0 ? (
+                        <span className="text-xs text-slate-500 italic py-2">No issue reports logged.</span>
+                      ) : (
+                        (selectedAssetDetails?.data?.recentReports || []).map((rep: any) => (
+                          <div key={rep.id} className="bg-slate-900/30 border border-slate-800/40 p-2.5 rounded-lg flex flex-col gap-1">
+                            <div className="flex justify-between items-center text-[10px]">
+                              <span className="text-slate-400 font-semibold">{rep.user_name || 'Anonymous User'}</span>
+                              <span className={`px-1 rounded text-[8px] uppercase ${
+                                rep.severity === 'high' ? 'bg-red-500/10 text-red-400' :
+                                rep.severity === 'medium' ? 'bg-amber-500/10 text-amber-400' :
+                                'bg-sky-500/10 text-sky-400'
+                              }`}>
+                                {rep.severity}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-300">{rep.description}</p>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* File a Report CTA */}
+                  <div className="border-t border-slate-800 pt-4">
+                    {isReporting ? (
+                      <form onSubmit={handleReportSubmit} className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl flex flex-col gap-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-bold uppercase text-slate-300">Submit Issue Report</h3>
+                          <button 
+                            type="button" 
+                            onClick={() => setIsReporting(false)} 
+                            className="text-[10px] text-slate-500 hover:text-slate-300 font-mono"
                           >
-                            {s}
+                            Cancel
                           </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="text-[8px] text-slate-400 block mb-1"> Malfunction Details</label>
-                      <textarea
-                        rows={3}
-                        value={reportForm.description}
-                        onChange={(e) => setReportForm({ ...reportForm, description: e.target.value })}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 focus:outline-none focus:border-orange-500"
-                        required
-                      />
-                    </div>
-
-                    {successMsg ? (
-                      <div className="p-2 bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs rounded-xl text-center font-medium">{successMsg}</div>
-                    ) : (
-                      <button type="submit" disabled={reportMutation.isPending} className="w-full bg-orange-500 hover:bg-orange-600 text-white py-2 rounded-xl text-xs font-bold transition-all shadow-sm">Submit</button>
-                    )}
-                  </form>
-                ) : (
-                  <button
-                    onClick={() => {
-                      setReportForm({ ...reportForm, infrastructure_id: currentAsset.id });
-                      setIsReporting(true);
-                    }}
-                    className="w-full bg-white hover:bg-slate-50 border border-slate-200 text-slate-800 font-bold py-2.5 rounded-2xl text-xs flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-all"
-                  >
-                    <PlusCircle className="h-4.5 w-4.5 text-orange-500" />
-                    File Malfunction Alert
-                  </button>
-                )}
-              </div>
-            </div>
-          )
-        ) : (
-          <div className="hidden md:flex w-[380px] flex-col gap-4 glass-panel rounded-3xl p-5 shadow-xl border border-slate-200/50 pointer-events-auto h-full md:h-auto overflow-y-auto shrink-0">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <div>
-                <h3 className="text-xs font-extrabold uppercase tracking-widest text-slate-850">Maintenance Planner</h3>
-                <p className="text-[9px] text-slate-400 font-mono mt-0.5">Reliability Telemetry</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-slate-55 p-3 rounded-2xl border border-slate-200 shadow-sm">
-                <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">Average Uptime</span>
-                <span className="text-lg font-bold font-mono text-emerald-600 block mt-1">{summary.averageReliability}%</span>
-              </div>
-              <div className="bg-slate-55 p-3 rounded-2xl border border-slate-200 shadow-sm">
-                <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">Risk Nodes</span>
-                <span className="text-lg font-bold font-mono text-rose-600 block mt-1">{summary.criticalAssets}</span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-2.5 mt-2">
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block pl-1">Scheduled Overhauls</span>
-              <div className="flex flex-col gap-2 max-h-[400px] overflow-y-auto pr-1">
-                {assets.map(a => {
-                  const score = (a as any).score !== undefined ? (a as any).score : 100;
-                  const failProb = (a as any).failure_probability !== undefined ? (a as any).failure_probability : 0.0;
-                  const estFail = (a as any).predicted_failure_time;
-
-                  return (
-                    <div key={a.id} className="bg-white p-3 rounded-2xl border border-slate-200/60 shadow-sm hover:border-slate-300 transition-colors">
-                      <div className="flex justify-between items-center">
-                        <div className="flex flex-col">
-                          <span className="text-xs font-bold text-slate-800">{a.name}</span>
-                          <span className="text-[8.5px] text-slate-400 font-mono mt-0.5">{a.station_name} · {a.type.replace('_', ' ')}</span>
                         </div>
-                        <span className={`text-xs font-bold font-mono ${score >= 80 ? 'text-emerald-600' : score >= 50 ? 'text-amber-600' : 'text-rose-600'}`}>{score}%</span>
-                      </div>
-                      <div className="flex items-center justify-between text-[9px] font-mono text-slate-500 border-t border-slate-100 pt-2 mt-1.5">
-                        <span>Risk: {(failProb * 100).toFixed(0)}%</span>
-                        {estFail ? (
-                          <span className="text-rose-600 font-bold flex items-center gap-1">
-                            <Clock className="h-3.5 w-3.5 text-rose-500" />
-                            {Math.ceil((new Date(estFail).getTime() - Date.now()) / (1000 * 60 * 60))} hrs
-                          </span>
+                        
+                        <div>
+                          <label className="text-[10px] text-slate-500 block mb-1">Issue Severity</label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {['low', 'medium', 'high'].map((sev) => (
+                              <button
+                                key={sev}
+                                type="button"
+                                onClick={() => setReportForm({ ...reportForm, severity: sev })}
+                                className={`px-2 py-1 rounded text-xs capitalize transition-all ${
+                                  reportForm.severity === sev 
+                                    ? 'bg-violet-600 text-white font-bold' 
+                                    : 'bg-slate-950 text-slate-400 border border-slate-850 hover:bg-slate-900'
+                                }`}
+                              >
+                                {sev}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="text-[10px] text-slate-500 block mb-1">Description</label>
+                          <textarea
+                            placeholder="Detail what is malfunctioning (e.g. escalator stopped, makes noise)..."
+                            value={reportForm.description}
+                            onChange={(e) => setReportForm({ ...reportForm, description: e.target.value })}
+                            rows={3}
+                            className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-300 placeholder-slate-600 focus:outline-none focus:border-violet-600"
+                            required
+                          />
+                        </div>
+
+                        {successMsg ? (
+                          <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs rounded-lg text-center">
+                            {successMsg}
+                          </div>
                         ) : (
-                          <span className="text-slate-400">Nominal</span>
+                          <button
+                            type="submit"
+                            disabled={reportMutation.isPending}
+                            className="w-full bg-violet-600 hover:bg-violet-500 disabled:bg-violet-800 text-white font-semibold py-2 rounded-lg text-xs flex items-center justify-center gap-2 transition-all shadow-md shadow-violet-600/20"
+                          >
+                            {reportMutation.isPending ? 'Queuing Agent Pipeline...' : 'Submit to verification queue'}
+                          </button>
                         )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                      </form>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setReportForm({ ...reportForm, infrastructure_id: currentAsset.id });
+                          setIsReporting(true);
+                        }}
+                        className="w-full bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-200 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-2 transition-all"
+                      >
+                        <PlusCircle className="h-4 w-4 text-violet-400" />
+                        Report a Malfunction with this Asset
+                      </button>
+                    )}
+                  </div>
+
+                </div>
+              )}
+
             </div>
+
           </div>
         )}
 
-        {/* MOBILE BOTTOM SLIDE-UP SHEET CARD (SWYFT style) */}
-        {viewMode === 'commuter' ? (
-          <div className="flex md:hidden absolute bottom-4 left-4 right-4 z-20 pointer-events-auto max-h-[60%] overflow-y-auto bg-white/95 border border-slate-200/80 shadow-2xl backdrop-blur-lg p-5 rounded-[32px] flex-col gap-3.5 animate-slide-up">
-            <div className="w-12 h-1 bg-slate-200 rounded-full mx-auto" />
-            {selectedStation ? (
-              <div className="flex flex-col gap-3">
-                <div className="flex justify-between items-start border-b border-slate-100 pb-3">
-                  <div className="flex items-center gap-3">
-                    <div className="h-12 w-12 rounded-xl bg-orange-55 border border-orange-200 flex items-center justify-center text-orange-500 shrink-0 shadow-inner">
-                      <MapPin className="h-6 w-6" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-900">{selectedStation.name}</h3>
-                      <p className="text-[9px] text-slate-400 mt-0.5">Transit Hub · Mumbai Segment</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      setSelectedStationId(null);
-                      setSelectedAssetId(null);
-                    }}
-                    className="h-7 w-7 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 active:scale-95"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
+        {/* OPERATOR DASHBOARD VIEW */}
+        {viewMode === 'operator' && (
+          <div className="flex flex-col gap-6">
+            
+            {/* Metric Scorecards */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              
+              <div className="glass-panel rounded-2xl p-5 flex items-center justify-between shadow-sm">
+                <div className="flex flex-col">
+                  <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Total Assets</span>
+                  <span className="text-2xl font-bold tracking-tight mt-1 text-slate-100">{summary.totalInfrastructure}</span>
+                  <span className="text-[10px] text-slate-500 mt-1">Across 6 Mumbai Hubs</span>
                 </div>
-                <div className="flex flex-col gap-1 text-xs">
-                  <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-widest">Address Details</span>
-                  <p className="text-slate-700 leading-relaxed font-semibold">{selectedStation.address}</p>
-                </div>
-                <div className="flex flex-col gap-2 mt-2 pt-2 border-t border-slate-100">
-                  <span className="text-[8.5px] font-bold text-slate-400 uppercase tracking-widest mb-1 pl-1">Station Nodes</span>
-                  <div className="flex flex-col gap-1.5 max-h-[140px] overflow-y-auto pr-1">
-                    {assets.filter(a => a.station_id === selectedStation.id).map(a => (
-                      <div 
-                        key={a.id} 
-                        onClick={() => setSelectedAssetId(a.id)}
-                        className={`flex items-center justify-between p-2 rounded-xl border text-[11px] font-medium transition-all ${selectedAssetId === a.id ? 'bg-orange-50 border-orange-300 text-orange-950 font-bold' : 'bg-slate-50 border-slate-200 text-slate-700'}`}
-                      >
-                        <span>{a.name}</span>
-                        <span className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
-                          a.status === 'healthy' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                          a.status === 'warning' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                          'bg-rose-50 text-rose-700 border-rose-200'
-                        }`}>
-                          {a.status}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <button
-                    onClick={() => {
-                      setReportForm({ ...reportForm, infrastructure_id: currentAsset?.id || '' });
-                      setIsReporting(true);
-                    }}
-                    className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold py-3.5 rounded-2xl text-[11px] transition-all shadow-lg shadow-orange-500/20 active:scale-98 flex items-center justify-center gap-1.5"
-                  >
-                    <PlusCircle className="h-4 w-4" />
-                    Report Malfunction
-                  </button>
+                <div className="bg-slate-900 p-3 rounded-xl text-violet-400 border border-slate-800">
+                  <MapPin className="h-5 w-5" />
                 </div>
               </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="relative w-full">
-                  <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 h-4 w-4 text-orange-500" />
-                  <input
-                    type="text"
-                    placeholder="Search where to go..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="bg-slate-50 border border-slate-200 rounded-2xl pl-10 pr-9 py-3 text-xs text-slate-800 w-full focus:outline-none focus:border-orange-500 transition-all font-semibold"
-                  />
-                  {searchQuery && (
-                    <button 
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-3.5 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  )}
+
+              <div className="glass-panel rounded-2xl p-5 flex items-center justify-between shadow-sm">
+                <div className="flex flex-col">
+                  <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Active Alerts</span>
+                  <span className="text-2xl font-bold tracking-tight mt-1 text-red-400">{summary.activeAlerts}</span>
+                  <span className="text-[10px] text-red-500 mt-1">{activeAlerts.length} unresolved</span>
                 </div>
-                <div className="flex flex-col gap-2 max-h-[220px] overflow-y-auto pr-1">
-                  {stations.filter(s => s.name.toLowerCase().includes(searchQuery.toLowerCase())).map(s => {
-                    const statusColor = getStationStatusColor(s.id);
-                    return (
-                      <div
-                        key={s.id}
-                        onClick={() => {
-                          setSelectedStationId(s.id);
-                          const stationAssets = assets.filter(a => a.station_id === s.id);
-                          if (stationAssets.length > 0) {
-                            setSelectedAssetId(stationAssets[0].id);
-                          }
-                        }}
-                        className="flex items-center justify-between p-3.5 rounded-2xl bg-white border border-slate-100 hover:bg-slate-55 transition-all shadow-sm"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="h-10 w-10 rounded-xl bg-orange-50 border border-orange-100 flex items-center justify-center text-orange-500">
-                            <MapPin className="h-5 w-5" />
-                          </div>
-                          <div className="flex flex-col gap-0.5">
-                            <span className="text-xs font-bold text-slate-800">{s.name}</span>
-                            <span className="text-[8.5px] text-slate-400 font-semibold font-mono uppercase">Mumbai Hub · Local Area</span>
-                          </div>
-                        </div>
-                        <span className={`h-2.5 w-2.5 rounded-full ${statusColor} shadow-sm`} />
-                      </div>
-                    );
-                  })}
+                <div className="bg-slate-900 p-3 rounded-xl text-red-400 border border-slate-800">
+                  <ShieldAlert className="h-5 w-5" />
                 </div>
               </div>
-            )}
-          </div>
-        ) : (
-          <div className="flex md:hidden absolute bottom-4 left-4 right-4 z-20 pointer-events-auto max-h-[60%] overflow-y-auto bg-white/95 border border-slate-200/80 shadow-2xl rounded-[32px] p-5 flex-col gap-3.5 animate-slide-up">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <button
-                onClick={() => setMobileTab('map')}
-                className={`text-[10px] font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-xl transition-all ${mobileTab === 'map' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500'}`}
-              >
-                Telemetry
-              </button>
-              <button
-                onClick={() => setMobileTab('alerts')}
-                className={`text-[10px] font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-xl transition-all ${mobileTab === 'alerts' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500'}`}
-              >
-                Alerts ({activeAlerts.length})
-              </button>
-              <button
-                onClick={() => setMobileTab('planner')}
-                className={`text-[10px] font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-xl transition-all ${mobileTab === 'planner' ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500'}`}
-              >
-                Planner
-              </button>
+
+              <div className="glass-panel rounded-2xl p-5 flex items-center justify-between shadow-sm">
+                <div className="flex flex-col">
+                  <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Critical Failures</span>
+                  <span className="text-2xl font-bold tracking-tight mt-1 text-amber-500">{summary.criticalAssets}</span>
+                  <span className="text-[10px] text-amber-500/70 mt-1">{assetsAtRisk} total at risk</span>
+                </div>
+                <div className="bg-slate-900 p-3 rounded-xl text-amber-500 border border-slate-800">
+                  <AlertTriangle className="h-5 w-5" />
+                </div>
+              </div>
+
+              <div className="glass-panel rounded-2xl p-5 flex items-center justify-between shadow-sm">
+                <div className="flex flex-col">
+                  <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">Avg Reliability</span>
+                  <span className="text-2xl font-bold tracking-tight mt-1 text-emerald-400">
+                    {summary.averageReliability}%
+                  </span>
+                  <span className="text-[10px] text-emerald-500/70 mt-1">Overall infrastructure health</span>
+                </div>
+                <div className="bg-slate-900 p-3 rounded-xl text-emerald-400 border border-slate-800">
+                  <CheckCircle className="h-5 w-5" />
+                </div>
+              </div>
+
             </div>
 
-            <div className="overflow-y-auto max-h-[200px] pr-1">
-              {mobileTab === 'map' && (
-                <div className="flex flex-col gap-2">
-                  {assets.map(a => (
-                    <div key={a.id} className="flex justify-between items-center p-3 bg-white border border-slate-100 rounded-2xl text-xs shadow-sm">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-bold text-slate-800">{a.name}</span>
-                        <span className="text-[8.5px] text-slate-400">{a.station_name}</span>
-                      </div>
-                      <span className={`text-[8.5px] font-bold px-2 py-0.5 rounded border ${a.status === 'healthy' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-rose-50 text-rose-700 border-rose-200'}`}>{a.status}</span>
-                    </div>
-                  ))}
+            {/* Main Dashboard Layout */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              
+              {/* Alert Feed (5/12 grid) */}
+              <div className="lg:col-span-5 flex flex-col gap-4 glass-panel rounded-2xl p-6">
+                <div>
+                  <h3 className="text-sm font-bold uppercase tracking-wider text-slate-300">
+                    Operator Dispatch Alert Feed ({activeAlerts.length})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Critical alerts auto-generated by Prediction Agents.
+                  </p>
                 </div>
-              )}
 
-              {mobileTab === 'alerts' && (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-4 overflow-y-auto max-h-[500px] pr-1">
                   {activeAlerts.length === 0 ? (
-                    <span className="text-xs text-slate-500 italic py-4 text-center block">No active alert logs.</span>
+                    <div className="text-center py-16 bg-slate-900/30 rounded-xl border border-slate-800 flex flex-col items-center gap-2">
+                      <CheckCircle className="h-8 w-8 text-emerald-500" />
+                      <span className="text-xs text-slate-500 font-semibold">No active warnings or failures reported.</span>
+                    </div>
                   ) : (
-                    activeAlerts.map(alert => (
-                      <div key={alert.id} className="p-3 bg-white border border-slate-100 rounded-2xl flex flex-col gap-1.5 shadow-sm">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] font-bold text-rose-600">{alert.title}</span>
+                    activeAlerts.map((alert) => (
+                      <div 
+                        key={alert.id} 
+                        className={`p-4 rounded-xl border flex flex-col gap-3 bg-slate-900/50 ${
+                          alert.severity === 'critical' ? 'border-red-500/20 glow-critical' : 'border-amber-500/20'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className={`px-2 py-0.5 rounded text-[8px] font-extrabold uppercase mr-2 ${
+                              alert.severity === 'critical' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                            }`}>
+                              {alert.severity}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              {new Date(alert.created_at).toLocaleTimeString()}
+                            </span>
+                          </div>
                           <button
                             onClick={() => resolveAlertMutation.mutate(alert.id)}
-                            className="text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-lg font-bold shadow-sm"
+                            disabled={resolveAlertMutation.isPending}
+                            className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 hover:text-white border border-emerald-500/20 text-[10px] font-bold px-2.5 py-1 rounded transition-all flex items-center gap-1"
                           >
-                            Resolve
+                            <Wrench className="h-3 w-3" />
+                            Resolve & Reset
                           </button>
                         </div>
-                        <p className="text-xs text-slate-600">{alert.message}</p>
+
+                        <div className="flex flex-col gap-1">
+                          <h4 className="text-xs font-bold text-slate-200">{alert.title}</h4>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[9px] text-slate-500 uppercase font-mono">
+                              {alert.asset_name} • {alert.station_name} Station
+                            </span>
+                            {alert.failure_probability !== undefined && (
+                              <span className="font-mono text-[10px] font-bold text-red-400">
+                                {Math.round(alert.failure_probability * 100)}% fail risk
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">{alert.message}</p>
+                        </div>
                       </div>
                     ))
                   )}
                 </div>
-              )}
+              </div>
 
-              {mobileTab === 'planner' && (
-                <div className="flex flex-col gap-2">
-                  {assets.map(a => {
-                    const failProb = (a as any).failure_probability !== undefined ? (a as any).failure_probability : 0.0;
-                    return (
-                      <div key={a.id} className="flex justify-between items-center p-3 bg-white border border-slate-100 rounded-2xl text-xs shadow-sm">
-                        <span className="font-bold text-slate-800">{a.name}</span>
-                        <span className="font-mono text-rose-600 font-bold">Risk: {(failProb * 100).toFixed(0)}%</span>
-                      </div>
-                    );
-                  })}
+              {/* Assets predictions and status (7/12 grid) */}
+              <div className="lg:col-span-7 flex flex-col gap-4 glass-panel rounded-2xl p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-slate-300">
+                      Predictive Maintenance Schedule
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      All assets graded by failure likelihood.
+                    </p>
+                  </div>
+
+                  <div className="text-[10px] font-mono text-violet-400 bg-violet-950/20 border border-violet-800/30 px-2 py-1 rounded">
+                    Queue consumer processing reports live
+                  </div>
                 </div>
-              )}
+
+                {/* Table list */}
+                <div className="max-h-[500px] overflow-y-auto overflow-x-auto border border-slate-800 rounded-xl bg-slate-900/20">
+                  <table className="w-full border-collapse text-left text-xs">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="border-b border-slate-800 text-slate-500 font-mono text-[9px] uppercase tracking-wider bg-slate-900/50">
+                        <th className="p-3">Asset</th>
+                        <th className="p-3">Station</th>
+                        <th className="p-3">Health Index</th>
+                        <th className="p-3">Fail Probability</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3">Est. Failure</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {isInfraLoading ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">Loading schedules...</td>
+                        </tr>
+                      ) : assets.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-500">No assets in database.</td>
+                        </tr>
+                      ) : (
+                        sortedOperatorAssets.map((asset) => {
+                          const score = asset.score !== undefined ? asset.score : 100;
+                          const failProb = asset.failure_probability !== undefined ? asset.failure_probability : 0.0;
+                          const estFail = asset.predicted_failure_time;
+
+                          return (
+                            <tr key={asset.id} className="hover:bg-slate-900/40 transition-colors">
+                              <td className="p-3">
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="font-semibold text-slate-300">{asset.name}</span>
+                                  <span className="text-[9px] text-slate-500 capitalize">{asset.type.replace('_', ' ')}</span>
+                                </div>
+                              </td>
+                              <td className="p-3 text-slate-400 font-medium">{asset.station_name}</td>
+                              <td className="p-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="h-1.5 w-16 bg-slate-800 rounded-full overflow-hidden">
+                                    <div 
+                                      className={`h-full rounded-full ${getHealthBarColor(score)}`}
+                                      style={{ width: `${score}%` }}
+                                    />
+                                  </div>
+                                  <span className={`font-mono font-bold ${getHealthTextColor(score)}`}>
+                                    {score}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className={`p-3 font-mono font-semibold ${getFailureProbabilityColor(failProb)}`}>
+                                {(failProb * 100).toFixed(0)}%
+                              </td>
+                              <td className="p-3">
+                                <StatusBadge status={asset.status} />
+                              </td>
+                              <td className="p-3">
+                                {estFail ? (
+                                  <span className="text-red-400 font-semibold flex items-center gap-1">
+                                    <Clock className="h-3 w-3" />
+                                    {/* Parse estimated hour gap from ISO string */}
+                                    {Math.ceil((new Date(estFail).getTime() - Date.now()) / (1000 * 60 * 60))} hrs
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 font-mono">Stable</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+              </div>
+
             </div>
+
+            {/* Analytics Charts Row */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              <div className="lg:col-span-8">
+                <HealthTrendChart data={healthTrendData} isLoading={isHealthTrendLoading} />
+              </div>
+              <div className="lg:col-span-4">
+                <RiskDistributionChart data={riskDistribution} />
+              </div>
+            </div>
+
+            <TypeBreakdownChart data={typeBreakdown} />
+
           </div>
         )}
 
       </main>
 
-      {/* Floating Bottom Navigation Tab (Desktop-only to look like a premium desk navbar) */}
-      <footer className="hidden md:flex w-full border-t border-slate-200/60 py-4 text-center text-[9px] text-slate-400 font-mono tracking-widest uppercase z-20 relative bg-slate-50/50">
-        Mumbai Operations Intelligent Desk • Responsive swyft layout v1.0
+      {/* Footer */}
+      <footer className={`w-full border-t border-slate-900 py-6 text-center text-[10px] text-slate-600 font-mono ${viewMode === 'operator' ? 'shrink-0' : 'mt-12'}`}>
+        Transit Infrastructure Intelligence • Hackathon Foundation Starter v1.0.0
       </footer>
     </div>
   );

@@ -13,6 +13,8 @@ interface TransitStore {
   setFilterStatus: (status: 'all' | 'healthy' | 'warning' | 'critical') => void;
   filterType: string;
   setFilterType: (type: string) => void;
+  currentUser: string;
+  setCurrentUser: (userId: string) => void;
 }
 
 export const useTransitStore = create<TransitStore>((set) => ({
@@ -28,4 +30,6 @@ export const useTransitStore = create<TransitStore>((set) => ({
   setFilterStatus: (filterStatus) => set({ filterStatus }),
   filterType: 'all',
   setFilterType: (filterType) => set({ filterType }),
+  currentUser: 'usr_1',
+  setCurrentUser: (currentUser) => set({ currentUser }),
 }));

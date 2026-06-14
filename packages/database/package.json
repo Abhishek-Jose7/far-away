@@ -1,6 +1,6 @@
 {
-  "name": "@transit/database",
+  "name": "@transitiq/database",
   "version": "1.0.0",
   "private": true,
-  "description": "Database migrations and seed scripts for Transit Infrastructure Intelligence"
+  "description": "Database migrations and seed scripts for TransitIQ"
 }

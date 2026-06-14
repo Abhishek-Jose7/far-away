@@ -1,20 +1,16 @@
 {
-  "name": "transit-infrastructure-intelligence",
+  "name": "transitiq-monorepo",
   "version": "1.0.0",
   "private": true,
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
-    "dev:worker": "npm run dev --workspace=apps/worker",
-    "dev:web": "npm run dev --workspace=apps/web",
-    "build:worker": "npm run build --workspace=apps/worker",
-    "build:web": "npm run build --workspace=apps/web",
-    "db:migrate:local": "npm run db:migrate:local --workspace=apps/worker",
-    "db:seed:local": "npm run db:seed:local --workspace=apps/worker"
+    "build": "npx turbo run build",
+    "dev:worker": "npx pnpm --filter worker dev",
+    "dev:web": "npx pnpm --filter web dev",
+    "db:migrate:local": "npx pnpm --filter worker db:migrate:local",
+    "db:seed:local": "npx pnpm --filter worker db:seed:local"
   },
   "devDependencies": {
+    "turbo": "^1.12.4",
     "typescript": "^5.3.3"
   }
 }

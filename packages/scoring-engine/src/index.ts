@@ -1,4 +1,4 @@
-import { UserRole, SeverityLevel, AssetStatus } from '@transit/types';
+import { UserRole, SeverityLevel, AssetStatus } from '@transitiq/types';
 
 /**
  * Agent 2: Verification Agent Logic
@@ -38,7 +38,13 @@ interface ScoringResult {
 /**
  * Agent 3: Prediction Agent Logic
  * Calculates health score, failure probability, and prediction window based on
- * maintenance age, severity, and confidence of reported issues.
+ * maintenance age, severity, frequency, and confidence of reported issues.
+ *
+ * Mathematically isolates:
+ * health = 100 - maintenancePenalty - reportPenalty - confidencePenalty
+ *
+ * and:
+ * failureProbability = weighted sum of deficit, critical threats, and neglect age
  */
 export function calculateHealthAndPrediction(
   assetType: string,
@@ -52,33 +58,60 @@ export function calculateHealthAndPrediction(
     lastMaintenance = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
   }
 
-  // 1. Calculate age deduction (max 30 points)
-  // Deduct 3 points for every 30 days since last maintenance
+  // 1. Maintenance Age Penalty (Max 30 points)
+  // Deduct 0.1 points per day since last maintenance (approx 3 points per 30 days)
   const diffTime = Math.abs(now.getTime() - lastMaintenance.getTime());
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  const ageDeduction = Math.min(30, (diffDays / 30) * 3);
+  const maintenancePenalty = Math.min(30, Number((diffDays * 0.1).toFixed(2)));
 
-  // 2. Calculate reports deduction (max 70 points)
-  // Deduct points weighted by severity and report confidence
-  let reportsDeduction = 0;
+  // 2. Report Penalty & Confidence Penalty
+  // - reportPenalty: Direct impact of issues scaled by reporter confidence
+  // - confidencePenalty: Uncertainty risk premium for unconfirmed citizen reports
+  let reportPenalty = 0;
+  let confidencePenalty = 0;
+  let hasHighSeverityReport = false;
+
   for (const report of reports) {
-    let baseDeduction = 0;
+    let basePenalty = 0;
     if (report.severity === 'low') {
-      baseDeduction = 5;
+      basePenalty = 10;
     } else if (report.severity === 'medium') {
-      baseDeduction = 15;
+      basePenalty = 25;
     } else if (report.severity === 'high') {
-      baseDeduction = 35;
+      basePenalty = 50;
+      hasHighSeverityReport = true;
     }
-    reportsDeduction += baseDeduction * report.confidence;
+
+    // Direct verified penalty (proportional to confidence)
+    reportPenalty += basePenalty * report.confidence;
+
+    // Confidence penalty (uncertainty premium for low-confidence/unverified claims)
+    // Scaled by (1 - confidence) times a discount factor (0.3)
+    confidencePenalty += basePenalty * (1 - report.confidence) * 0.3;
   }
-  reportsDeduction = Math.min(70, reportsDeduction);
+
+  // Cap penalties to maintain a reasonable minimum health score baseline
+  const cappedReportPenalty = Math.min(60, reportPenalty);
+  const cappedConfidencePenalty = Math.min(20, confidencePenalty);
 
   // 3. Final Health Score (0 - 100)
-  const healthScore = Math.max(0, Math.round(100 - ageDeduction - reportsDeduction));
+  // health = 100 - maintenancePenalty - reportPenalty - confidencePenalty
+  const healthScore = Math.max(
+    0, 
+    Math.round(100 - maintenancePenalty - cappedReportPenalty - cappedConfidencePenalty)
+  );
 
   // 4. Failure Probability (0.00 - 1.00)
-  const failureProbability = Number(((100 - healthScore) / 100).toFixed(2));
+  // Weighted sum of:
+  // - Health Deficit (60% weight)
+  // - Active High-Severity Outage Threat (30% weight)
+  // - Maintenance Neglect Age ratio (10% weight, normalized over a year)
+  const healthDeficit = (100 - healthScore) / 100;
+  const criticalThreatRatio = hasHighSeverityReport ? 1.0 : 0.0;
+  const maintenanceNeglectRatio = Math.min(1.0, diffDays / 365);
+
+  const rawProbability = (healthDeficit * 0.60) + (criticalThreatRatio * 0.30) + (maintenanceNeglectRatio * 0.10);
+  const failureProbability = Number(Math.min(1.0, Math.max(0.0, rawProbability)).toFixed(2));
 
   // 5. Predicted Failure Time in Hours
   let predictedFailureHours: number | null = null;

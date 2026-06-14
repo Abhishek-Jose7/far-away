@@ -1,5 +1,5 @@
 {
-  "name": "@transit/scoring-engine",
+  "name": "@transitiq/scoring-engine",
   "version": "1.0.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -7,7 +7,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@transit/types": "*"
+    "@transitiq/types": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.3.3"

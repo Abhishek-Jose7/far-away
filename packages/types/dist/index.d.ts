@@ -38,7 +38,14 @@ export interface Report {
     severity: SeverityLevel;
     confidence: number;
     created_at: string;
+    category: string;
+    location: string | null;
+    status: 'pending' | 'verified' | 'assigned' | 'resolved';
+    assignee: string | null;
+    cleanliness_rating: number | null;
     user_name?: string;
+    asset_name?: string;
+    station_name?: string;
 }
 export interface HealthScore {
     id: string;
@@ -77,6 +84,9 @@ export interface CreateReportPayload {
     user_id: string;
     description: string;
     severity: SeverityLevel;
+    category?: string;
+    location?: string;
+    cleanliness_rating?: number;
 }
 export interface CreateAlertPayload {
     infrastructure_id: string;

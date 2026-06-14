@@ -210,8 +210,8 @@ const runAgentPipeline = async (
   const recentReportsCount = countResult?.count || 1;
   const confidence = calculateConfidenceScore(recentReportsCount, userRole);
 
-  // Save confidence score in D1
-  await db.prepare('UPDATE reports SET confidence = ? WHERE id = ?').bind(confidence, reportId).run();
+  // Save confidence score and mark status as verified in D1
+  await db.prepare('UPDATE reports SET confidence = ?, status = \'verified\' WHERE id = ?').bind(confidence, reportId).run();
 
   // 2. PREDICTION AGENT STEP
   const asset = await db.prepare('SELECT type, last_maintenance, name FROM infrastructure WHERE id = ?').bind(infrastructureId).first<Infrastructure>();
@@ -322,15 +322,18 @@ app.post('/api/reports', authMiddleware, async (c) => {
 
     // Step 1: Save Report to D1 (Confidence starts at 0.5)
     await c.env.DB.prepare(`
-      INSERT INTO reports (id, infrastructure_id, user_id, description, severity, confidence, created_at)
-      VALUES (?, ?, ?, ?, ?, 0.5, ?)
+      INSERT INTO reports (id, infrastructure_id, user_id, description, severity, confidence, created_at, category, location, status, cleanliness_rating)
+      VALUES (?, ?, ?, ?, ?, 0.5, ?, ?, ?, 'pending', ?)
     `).bind(
       reportId, 
       payload.infrastructure_id, 
       payload.user_id, 
       payload.description, 
       payload.severity, 
-      timestamp
+      timestamp,
+      payload.category || 'other',
+      payload.location || null,
+      payload.cleanliness_rating || null
     ).run();
 
     // Step 2: Execute Verification & Prediction synchronous pipeline immediately
@@ -352,6 +355,23 @@ app.post('/api/reports', authMiddleware, async (c) => {
   }
 });
 
+// GET all reports (with user and infrastructure metadata for Authority Dashboard)
+app.get('/api/reports', async (c) => {
+  try {
+    const { results } = await c.env.DB.prepare(`
+      SELECT r.*, u.name as user_name, i.name as asset_name, s.name as station_name
+      FROM reports r
+      LEFT JOIN users u ON r.user_id = u.id
+      LEFT JOIN infrastructure i ON r.infrastructure_id = i.id
+      LEFT JOIN stations s ON i.station_id = s.id
+      ORDER BY r.created_at DESC
+    `).all();
+    return c.json({ success: true, data: results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
 app.get('/api/reports/:infrastructureId', async (c) => {
   const infraId = c.req.param('infrastructureId');
   try {
@@ -363,6 +383,84 @@ app.get('/api/reports/:infrastructureId', async (c) => {
       ORDER BY r.created_at DESC
     `).bind(infraId).all();
     return c.json({ success: true, data: results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// POST to assign a report to a public transit agency
+app.post('/api/reports/:id/assign', authMiddleware, async (c) => {
+  const reportId = c.req.param('id');
+  try {
+    const body = await c.req.json();
+    const { assignee } = body;
+    if (!assignee) {
+      return c.json({ success: false, error: 'Assignee agency is required' }, 400);
+    }
+    await c.env.DB.prepare('UPDATE reports SET assignee = ?, status = \'assigned\' WHERE id = ?')
+      .bind(assignee, reportId)
+      .run();
+    return c.json({ success: true, message: 'Complaint assigned to agency' });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// POST to resolve a report and reset asset status to healthy
+app.post('/api/reports/:id/resolve', authMiddleware, async (c) => {
+  const reportId = c.req.param('id');
+  const resolverUserId = c.get('userId');
+  try {
+    const user = await c.env.DB.prepare('SELECT role FROM users WHERE id = ?').bind(resolverUserId).first<{ role: string }>();
+    if (!user || (user.role !== 'operator' && user.role !== 'admin')) {
+      return c.json({ success: false, error: 'Forbidden: Only operators or admins can resolve complaints' }, 403);
+    }
+
+    const report = await c.env.DB.prepare('SELECT infrastructure_id FROM reports WHERE id = ?').bind(reportId).first<{ infrastructure_id: string }>();
+    if (!report) {
+      return c.json({ success: false, error: 'Report not found' }, 404);
+    }
+
+    const timestamp = new Date().toISOString();
+
+    // 1. Mark report as resolved in DB
+    await c.env.DB.prepare('UPDATE reports SET status = \'resolved\' WHERE id = ?').bind(reportId).run();
+
+    // 2. Resolve any active alerts on this asset
+    await c.env.DB.prepare('UPDATE alerts SET resolved = 1 WHERE infrastructure_id = ? AND resolved = 0').bind(report.infrastructure_id).run();
+
+    // 3. Log maintenance task completed
+    const logId = `maint_${crypto.randomUUID()}`;
+    await c.env.DB.prepare(`
+      INSERT INTO maintenance_logs (id, infrastructure_id, action, technician, completed_at)
+      VALUES (?, ?, 'Resolved Complaint', 'Agency Service Dispatch', ?)
+    `).bind(logId, report.infrastructure_id, timestamp).run();
+
+    // 4. Reset the asset back to healthy status & update last maintenance time
+    await c.env.DB.prepare(`
+      UPDATE infrastructure 
+      SET status = 'healthy', last_maintenance = ? 
+      WHERE id = ?
+    `).bind(timestamp, report.infrastructure_id).run();
+
+    // 5. Calculate a fresh healthy score
+    const scoreId = `hs_${crypto.randomUUID()}`;
+    await c.env.DB.prepare(`
+      INSERT INTO health_scores (id, infrastructure_id, score, failure_probability, predicted_failure_time, computed_at)
+      VALUES (?, ?, 100, 0.0, NULL, ?)
+    `).bind(scoreId, report.infrastructure_id, timestamp).run();
+
+    // 6. Append a status history baseline for line charts
+    const historyId = `sh_${crypto.randomUUID()}`;
+    await c.env.DB.prepare(`
+      INSERT INTO infrastructure_status_history (id, infrastructure_id, health_score, failure_probability, created_at)
+      VALUES (?, ?, 100, 0.0, ?)
+    `).bind(historyId, report.infrastructure_id, timestamp).run();
+
+    // Clear Cache
+    await c.env.TRANSIT_KV.delete('dashboard_summary');
+
+    return c.json({ success: true, message: 'Complaint resolved, asset status reset to healthy' });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }

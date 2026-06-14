@@ -15,6 +15,9 @@ export const createReportSchema = z.object({
   severity: z.enum(['low', 'medium', 'high'], {
     required_error: "Severity level must be low, medium, or high",
   }),
+  category: z.string().optional(),
+  location: z.string().optional().nullable(),
+  cleanliness_rating: z.number().optional().nullable(),
 });
 
 export type CreateReportInput = z.infer<typeof createReportSchema>;

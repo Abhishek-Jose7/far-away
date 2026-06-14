@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 
 interface TransitStore {
-  viewMode: 'commuter' | 'operator';
-  setViewMode: (mode: 'commuter' | 'operator') => void;
+  viewMode: 'commuter' | 'operator' | 'authority';
+  setViewMode: (mode: 'commuter' | 'operator' | 'authority') => void;
   selectedAssetId: string | null;
   setSelectedAssetId: (id: string | null) => void;
   selectedStationId: string | null;
@@ -15,6 +15,10 @@ interface TransitStore {
   setFilterType: (type: string) => void;
   currentUser: string;
   setCurrentUser: (userId: string) => void;
+  activeCommuterScreen: 'home' | 'station' | 'facility' | 'report' | 'tracking';
+  setActiveCommuterScreen: (screen: 'home' | 'station' | 'facility' | 'report' | 'tracking') => void;
+  selectedFacilityId: string | null;
+  setSelectedFacilityId: (id: string | null) => void;
 }
 
 export const useTransitStore = create<TransitStore>((set) => ({
@@ -32,4 +36,8 @@ export const useTransitStore = create<TransitStore>((set) => ({
   setFilterType: (filterType) => set({ filterType }),
   currentUser: 'usr_1',
   setCurrentUser: (currentUser) => set({ currentUser }),
+  activeCommuterScreen: 'home',
+  setActiveCommuterScreen: (activeCommuterScreen) => set({ activeCommuterScreen }),
+  selectedFacilityId: null,
+  setSelectedFacilityId: (selectedFacilityId) => set({ selectedFacilityId }),
 }));

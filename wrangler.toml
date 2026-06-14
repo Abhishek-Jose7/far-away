@@ -18,18 +18,7 @@ migrations_dir = "packages/database/migrations"
 # Key-Value Cache Bindings
 [[kv_namespaces]]
 binding = "TRANSIT_KV"
-id = "00000000-0000-0000-0000-000000000002"
-
-# --- Cloudflare Queues Producers ---
-[[queues.producers]]
-queue = "transitiq-report-queue"
-binding = "REPORT_QUEUE"
-
-# --- Cloudflare Queues Consumers ---
-[[queues.consumers]]
-queue = "transitiq-report-queue"
-max_batch_size = 10
-max_batch_timeout = 1
+id = "7cce649487d149948c3d2e624efafeb9"
 
 # --- Production Environment ---
 [env.production]
@@ -43,13 +32,4 @@ migrations_dir = "packages/database/migrations"
 
 [[env.production.kv_namespaces]]
 binding = "TRANSIT_KV"
-id = "00000000-0000-0000-0000-000000000004"
-
-[[env.production.queues.producers]]
-queue = "transitiq-report-queue-prod"
-binding = "REPORT_QUEUE"
-
-[[env.production.queues.consumers]]
-queue = "transitiq-report-queue-prod"
-max_batch_size = 10
-max_batch_timeout = 1
+id = "2c0a73b424b84d4cb29fdf51b2fb8046"
